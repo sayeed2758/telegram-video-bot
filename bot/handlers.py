@@ -138,9 +138,21 @@ def _home_message(selected_platform: str = "all") -> str:
 
 
 def _file_type(result: FileResult) -> str:
-    value = str(getattr(result, "file_type", "video") or "video").lower().strip()
-    if value in {"video", "document", "audio", "image"}:
-        return value
+    """Safely classify a resolved file without changing the resolver contract."""
+    title = (getattr(result, "title", "") or "").lower().strip()
+    mime = (getattr(result, "mime_type", "") or "").lower().strip()
+
+    if mime.startswith("video/") or title.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")):
+        return "video"
+    if mime.startswith("audio/") or title.endswith((".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg")):
+        return "audio"
+    if mime.startswith("image/") or title.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
+        return "image"
+    if mime == "application/pdf" or title.endswith((
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".txt", ".csv", ".rtf", ".odt",
+    )):
+        return "document"
     return "video"
 
 
@@ -175,27 +187,12 @@ def _result_details(result: FileResult | ResolveResult) -> str:
     if quality and file_type == "video":
         details += f"🎞 <b>Quality:</b> {escape(str(quality))}\n"
 
-    if file_type == "document":
-        details += "\n📄 <b>Ready as a document</b>\n"
-    elif file_type == "audio":
-        details += "\n🎵 <b>Ready as audio</b>\n"
-    elif file_type == "image":
-        details += "\n🖼 <b>Ready as an image</b>\n"
-
-    details += "\n🎯 <b>Choose an option below</b>"
+    details += f"\n🎯 <b>{'Ready to download' if file_type != 'video' else 'Choose an option below'}</b>"
     return details
 
 
 def _is_document_result(result: FileResult) -> bool:
-    """Detect document results using API classification or common extensions."""
-    if _file_type(result) == "document":
-        return True
-    title = (getattr(result, "title", "") or "").lower().strip()
-    document_exts = (
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx",
-        ".ppt", ".pptx", ".txt", ".csv", ".rtf", ".odt",
-    )
-    return title.endswith(document_exts)
+    return _file_type(result) == "document"
 
 
 async def _send_file_result(
@@ -203,13 +200,13 @@ async def _send_file_result(
     result: FileResult,
     original_url: str,
 ) -> None:
-    """Smart delivery center: documents, audio and images are sent natively when possible."""
+    """Smart delivery while preserving the existing video result flow."""
     details = _result_details(result)
     file_type = _file_type(result)
     direct_url = result.download_url or result.playable_url
 
-    # Document support: send the file directly to Telegram when a direct URL exists.
-    if _is_document_result(result) and direct_url:
+    # Documents/PDFs: native Telegram document when a direct URL is available.
+    if file_type == "document" and direct_url:
         try:
             await message.reply_document(
                 document=direct_url,
@@ -220,22 +217,22 @@ async def _send_file_result(
         except Exception:
             pass
 
-    # Audio support: prefer the direct download URL and fall back to stream URL.
+    # Audio: native Telegram audio when a direct URL is available.
     if file_type == "audio" and direct_url:
         try:
             await message.reply_audio(
                 audio=direct_url,
                 caption=details,
                 parse_mode=ParseMode.HTML,
-                title=result.title[:64] if result.title else None,
+                title=(getattr(result, "title", "") or "Audio")[:64],
             )
             return
         except Exception:
             pass
 
-    # Image support: a direct image URL is preferred; thumbnail is a fallback.
+    # Images: native photo delivery when possible.
     if file_type == "image":
-        image_url = result.download_url or result.thumbnail or result.playable_url
+        image_url = result.download_url or result.playable_url or result.thumbnail
         if image_url:
             try:
                 await message.reply_photo(
@@ -247,14 +244,13 @@ async def _send_file_result(
             except Exception:
                 pass
 
+    # Existing video/result UI remains unchanged.
     qualities = tuple(result.quality_urls.keys()) if file_type == "video" else ()
-
     markup = result_keyboard(
         result.playable_url if file_type == "video" else None,
         result.download_url,
         original_url,
         quality_options=qualities,
-        file_type=file_type,
     )
 
     thumbnail = result.thumbnail or ""
@@ -615,21 +611,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             if len(resolved.files) > 1:
                 count = len(resolved.files)
-                type_counts = {"video": 0, "document": 0, "audio": 0, "image": 0}
-                for item in resolved.files:
-                    kind = _file_type(item)
-                    type_counts[kind] = type_counts.get(kind, 0) + 1
-                summary_parts = []
-                for kind, label in (("video", "🎬"), ("document", "📄"), ("audio", "🎵"), ("image", "🖼")):
-                    if type_counts.get(kind):
-                        summary_parts.append(f"{label} {type_counts[kind]}")
-                summary = " • ".join(summary_parts)
                 message = (
                     f"{BRAND}\n\n"
-                    "📁 <b>Smart Download Center</b>\n\n"
-                    f"✅ {count} files are available."
-                    + (f"\n{summary}" if summary else "")
-                    + "\n\nSelect a file to continue:"
+                    "📁 <b>Multiple Files Found</b>\n\n"
+                    f"✅ {count} files are available.\n"
+                    "Select the file you want to open:"
                 )
                 await processing.edit_text(
                     message,
@@ -893,7 +879,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 result.download_url,
                 original_url,
                 quality_options=tuple(result.quality_urls.keys()),
-                file_type=_file_type(result),
             )
         )
         await query.answer("Back to result options.")
@@ -930,7 +915,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 result.download_url,
                 original_url,
                 quality_options=tuple(result.quality_urls.keys()),
-                file_type=_file_type(result),
             )
         )
         await query.answer(f"{quality} selected.")

@@ -63,10 +63,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             lines.append("ℹ️ Direct download is not enabled in this phase.")
             text = "\n".join(lines)
         else:
-            text = (
-                "❌ <b>Could not process this TeraBox link.</b>\n\n"
-                f"Reason: {result.message}"
-            )
+            reason = result.message
+            if "verify" in reason.lower() and "TERABOX_COOKIE" in reason:
+                text = (
+                    "🛡️ <b>TeraBox verification required.</b>\n\n"
+                    "TeraBox is asking for a verified session for this share.\n\n"
+                    "This is not a Telegram or Render error. "
+                    "We will handle verified-session support in the next step."
+                )
+            else:
+                text = (
+                    "❌ <b>Could not process this TeraBox link.</b>\n\n"
+                    f"Reason: {reason}"
+                )
 
         try:
             await status.edit_text(text, parse_mode="HTML")

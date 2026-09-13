@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -25,7 +25,9 @@ HELP_TEXT = (
     "1️⃣ Send a public TeraBox share link.\n"
     "2️⃣ I will detect and process the link.\n"
     "3️⃣ If the share can be resolved, its file details will be shown.\n\n"
-    "⚠️ Some TeraBox shares may require verification or a valid session."
+    "⚠️ Some TeraBox shares may require verification or a valid session.\n\n"
+    "🛠️ <b>Any Problem you can Report here :-</b> "
+    '<a href="https://t.me/Dragonn_Exclusive">@Dragonn_Exclusive</a>'
 )
 
 SUPPORTED_TEXT = (
@@ -77,7 +79,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await message.reply_text(
             HELP_TEXT,
             parse_mode="HTML",
-            reply_markup=welcome_keyboard(),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🛠️ Report a Problem",
+                            url="https://t.me/Dragonn_Exclusive",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton("🌐 Supported", callback_data="supported"),
+                        InlineKeyboardButton("🏠 Start", callback_data="start"),
+                    ],
+                ]
+            ),
         )
 
 
@@ -180,7 +195,20 @@ async def callback_handler(
         await query.message.reply_text(
             HELP_TEXT,
             parse_mode="HTML",
-            reply_markup=welcome_keyboard(),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "🛠️ Report a Problem",
+                            url="https://t.me/Dragonn_Exclusive",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton("🌐 Supported", callback_data="supported"),
+                        InlineKeyboardButton("🏠 Start", callback_data="start"),
+                    ],
+                ]
+            ),
         )
         return
 

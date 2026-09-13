@@ -1,4 +1,5 @@
 from html import escape
+import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -15,25 +16,26 @@ from .config import ADMIN_ID
 from .database import (
     check_and_record_request_limit,
     count_users,
+    log_history,
     log_request,
+    recent_history,
     recent_requests,
     recent_users,
-    recent_history,
-    log_history,
     request_stats,
     upsert_user,
 )
 from .keyboards import (
+    admin_keyboard,
     file_selection_keyboard,
     home_keyboard,
     platform_keyboard,
     quality_keyboard,
     result_keyboard,
-    admin_keyboard,
 )
 from .platforms import detect_platform, is_url, normalize_url
 from .resolver import FileResult, ResolveResult, resolve_link
 
+logger = logging.getLogger(__name__)
 
 PLATFORM_LABELS = {
     "terabox": "TeraBox",
@@ -44,55 +46,43 @@ PLATFORM_LABELS = {
 
 def _result_details(result: FileResult | ResolveResult) -> str:
     title = escape(getattr(result, "title", "TeraBox file") or "TeraBox file")
+    details = "🎬 <b>TeraBox Result</b>\n\n"
+    details += f"📄 <b>Name:</b> {title}\n"
 
-    details = (
-        "🎬 <b>TeraBox Result</b>\n\n"
-        f"📄 <b>Name:</b> {title}\n"
-    )
-
-    size_formatted = getattr(result, "size_formatted", "")
+    size = getattr(result, "size_formatted", "")
     duration = getattr(result, "duration", "")
     quality = getattr(result, "quality", "")
-
-    if size_formatted:
-        details += f"📦 <b>Size:</b> {escape(str(size_formatted))}\n"
+    if size:
+        details += f"📦 <b>Size:</b> {escape(str(size))}\n"
     if duration:
         details += f"⏱ <b>Duration:</b> {escape(str(duration))}\n"
     if quality:
         details += f"🎞 <b>Quality:</b> {escape(str(quality))}\n"
 
-    details += "\n✅ <b>Ready to play</b>\nChoose an option below:"
+    details += "\n✅ <b>Ready</b>\nChoose an option below:"
     return details
 
 
-async def _send_file_result(
-    message,
-    result: FileResult,
-    original_url: str,
-) -> None:
-    """Render a selected file using the same working Phase 4B UI."""
-    details = _result_details(result)
-    qualities = tuple(result.quality_urls.keys())
-
+async def _send_file_result(message, result: FileResult, original_url: str) -> None:
     markup = result_keyboard(
         result.playable_url,
         result.download_url,
         original_url,
-        quality_options=qualities,
+        quality_options=tuple(result.quality_urls.keys()),
     )
+    details = _result_details(result)
 
-    thumbnail = result.thumbnail or ""
-    if thumbnail:
+    if result.thumbnail:
         try:
             await message.reply_photo(
-                photo=thumbnail,
+                photo=result.thumbnail,
                 caption=details,
                 parse_mode=ParseMode.HTML,
                 reply_markup=markup,
             )
             return
         except Exception:
-            pass
+            logger.info("Thumbnail could not be sent; using text result.")
 
     await message.reply_text(
         details,
@@ -110,7 +100,6 @@ async def _touch_user(update: Update) -> None:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _touch_user(update)
     context.user_data["selected_platform"] = "all"
-
     await update.message.reply_text(
         "👋 <b>Welcome to Tera Video Bot</b>\n\n"
         "🔗 Send a supported public link and I'll process it for you.\n\n"
@@ -123,34 +112,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _touch_user(update)
-
     await update.message.reply_text(
         "📖 <b>How to use</b>\n\n"
         "1️⃣ Select a platform or choose All.\n"
         "2️⃣ Send a public/authorized link.\n"
         "3️⃣ The bot detects the platform.\n"
         "4️⃣ Available files and links will be shown.\n\n"
-        "ℹ️ Resolver integrations use configured API services.",
+        "ℹ️ Only public/authorized shares are supported.",
         parse_mode=ParseMode.HTML,
         reply_markup=home_keyboard(),
     )
 
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show the current user's latest processed links."""
     await _touch_user(update)
-
     user = update.effective_user
     if not user:
         return
 
     rows = await recent_history(user.id, 10)
-
     if not rows:
         await update.message.reply_text(
-            "🕘 <b>My History</b>\n\n"
-            "No processed links yet.\n\n"
-            "Send a supported public link and it will appear here.",
+            "🕘 <b>My History</b>\n\nNo processed links yet.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
         )
@@ -158,40 +141,22 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     lines = ["🕘 <b>My History</b>", ""]
     buttons = []
-
     for index, row in enumerate(rows, 1):
-        platform = PLATFORM_LABELS.get(
-            row["platform"],
-            str(row["platform"]).title(),
-        )
+        platform = PLATFORM_LABELS.get(row["platform"], str(row["platform"]).title())
         status = "✅" if row["status"] == "success" else "❌"
         title = escape(row["title"] or "TeraBox file")
         if len(title) > 70:
             title = title[:67] + "..."
-        created = escape(
-            row["created_at"].replace("T", " ")[:16]
-        )
-
-        lines.append(
-            f"{index}. {status} <b>{title}</b>\n"
-            f"   {escape(platform)} • {created}"
-        )
-
+        created = escape(row["created_at"].replace("T", " ")[:16])
+        lines.append(f"{index}. {status} <b>{title}</b>\n   {escape(platform)} • {created}")
         if row["status"] == "success" and row["original_url"]:
-            buttons.append([
-                InlineKeyboardButton(
-                    f"🔗 {index}. Open Link",
-                    url=row["original_url"],
-                )
-            ])
+            buttons.append([InlineKeyboardButton(f"🔗 {index}. Open Link", url=row["original_url"])])
 
     await update.message.reply_text(
         "\n".join(lines),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
-            buttons + [
-                [InlineKeyboardButton("🏠 Home", callback_data="home")]
-            ]
+            buttons + [[InlineKeyboardButton("🏠 Home", callback_data="home")]]
         ),
     )
 
@@ -202,14 +167,14 @@ async def _is_admin(update: Update) -> bool:
 
 
 def _stats_text(stats: dict[str, int], users: int) -> str:
-    success_rate = round(stats["success"] * 100 / stats["total"], 1) if stats["total"] else 0
+    rate = round(stats["success"] * 100 / stats["total"], 1) if stats["total"] else 0
     return (
         "📊 <b>Admin Dashboard</b>\n\n"
         f"👥 <b>Users:</b> {users}\n"
         f"🔗 <b>Total requests:</b> {stats['total']}\n"
         f"✅ <b>Successful:</b> {stats['success']}\n"
         f"❌ <b>Failed:</b> {stats['failed']}\n"
-        f"📈 <b>Success rate:</b> {success_rate}%\n\n"
+        f"📈 <b>Success rate:</b> {rate}%\n\n"
         "<b>By platform</b>\n"
         f"• TeraBox: {stats['terabox']}\n"
         f"• DiskWala: {stats['diskwala']}\n"
@@ -222,20 +187,16 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if not await _is_admin(update):
         await update.message.reply_text("⛔ Admin only.")
         return
-    stats = await request_stats()
-    users = await count_users()
     await update.message.reply_text(
-        _stats_text(stats, users),
+        _stats_text(await request_stats(), await count_users()),
         parse_mode=ParseMode.HTML,
         reply_markup=admin_keyboard(),
     )
 
 
 async def _send_admin_stats_message(message) -> None:
-    stats = await request_stats()
-    users = await count_users()
     await message.edit_text(
-        _stats_text(stats, users),
+        _stats_text(await request_stats(), await count_users()),
         parse_mode=ParseMode.HTML,
         reply_markup=admin_keyboard(),
     )
@@ -247,8 +208,8 @@ async def _admin_users_text() -> str:
         return "👥 <b>Recent Users</b>\n\nNo users recorded yet."
     lines = ["👥 <b>Recent Users</b>", ""]
     for i, user in enumerate(users, 1):
-        name = escape(user['first_name'] or "Unknown")
-        username = escape(user['username']) if user['username'] else "—"
+        name = escape(user["first_name"] or "Unknown")
+        username = escape(user["username"]) if user["username"] else "—"
         lines.append(f"{i}. <b>{name}</b>\n   @{username}\n   ID: <code>{user['user_id']}</code>")
     return "\n".join(lines)
 
@@ -259,10 +220,13 @@ async def _admin_requests_text() -> str:
         return "🧾 <b>Recent Requests</b>\n\nNo requests recorded yet."
     lines = ["🧾 <b>Recent Requests</b>", ""]
     for row in rows:
-        platform = PLATFORM_LABELS.get(row['platform'], row['platform'].title())
-        status = "✅" if row['status'] == "success" else "❌"
-        created = row['created_at'].replace("T", " ")[:19]
-        lines.append(f"{status} <b>{escape(platform)}</b> • <code>{row['user_id']}</code> • {escape(created)}")
+        platform = PLATFORM_LABELS.get(row["platform"], row["platform"].title())
+        status = "✅" if row["status"] == "success" else "❌"
+        created = row["created_at"].replace("T", " ")[:19]
+        lines.append(
+            f"{status} <b>{escape(platform)}</b> • "
+            f"<code>{row['user_id']}</code> • {escape(created)}"
+        )
     return "\n".join(lines)
 
 
@@ -271,10 +235,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _is_admin(update):
         await update.message.reply_text("⛔ Admin only.")
         return
-    stats = await request_stats()
-    users = await count_users()
     await update.message.reply_text(
-        _stats_text(stats, users),
+        _stats_text(await request_stats(), await count_users()),
         parse_mode=ParseMode.HTML,
         reply_markup=admin_keyboard(),
     )
@@ -282,26 +244,23 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _touch_user(update)
-    text = (update.message.text or "").strip()
+    message = update.effective_message
+    if not message:
+        return
+    text = (message.text or "").strip()
 
     if text == "🎯 Select Platform":
-        await update.message.reply_text(
-            "🎯 <b>Select Platform</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=platform_keyboard(),
-        )
+        await message.reply_text("🎯 <b>Select Platform</b>", parse_mode=ParseMode.HTML, reply_markup=platform_keyboard())
         return
-
     if text == "🕘 My History":
         await history(update, context)
         return
-
     if text == "ℹ️ Help":
         await help_command(update, context)
         return
 
     if not is_url(text):
-        await update.message.reply_text(
+        await message.reply_text(
             "🔗 <b>Invalid link</b>\n\nPlease send a valid http/https link.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
@@ -313,16 +272,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     selected = context.user_data.get("selected_platform", "all")
 
     if not detected:
-        await update.message.reply_text(
+        await message.reply_text(
             "⚠️ <b>Unsupported platform</b>\n\n"
-            "I currently recognize <b>TeraBox</b>, <b>DiskWala</b> and <b>Flezen</b> links.",
+            "Supported: <b>TeraBox</b>, <b>DiskWala</b>, <b>Flezen</b>.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
         )
         return
 
     if selected != "all" and selected != detected:
-        await update.message.reply_text(
+        await message.reply_text(
             f"⚠️ You selected <b>{PLATFORM_LABELS[selected]}</b>, "
             f"but this link is from <b>{PLATFORM_LABELS[detected]}</b>.",
             parse_mode=ParseMode.HTML,
@@ -332,31 +291,23 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     user = update.effective_user
     if user and not await _is_admin(update):
-        allowed, retry_after, remaining_today = await check_and_record_request_limit(
-            user.id,
-            cooldown_seconds=10,
-            daily_limit=40,
-        )
-
+        allowed, retry_after, _ = await check_and_record_request_limit(user.id, 10, 40)
         if not allowed:
-            if retry_after > 0:
-                await update.message.reply_text(
-                    "⏳ <b>Please wait a moment.</b>\n\n"
-                    f"Try again in <b>{retry_after} seconds</b>.",
+            if retry_after:
+                await message.reply_text(
+                    f"⏳ <b>Please wait {retry_after} seconds.</b>",
                     parse_mode=ParseMode.HTML,
                     reply_markup=home_keyboard(),
                 )
             else:
-                await update.message.reply_text(
-                    "🚦 <b>Daily request limit reached.</b>\n\n"
-                    "You have reached today's processing limit. "
-                    "Please try again tomorrow.",
+                await message.reply_text(
+                    "🚦 <b>Daily request limit reached.</b>\n\nTry again tomorrow.",
                     parse_mode=ParseMode.HTML,
                     reply_markup=home_keyboard(),
                 )
             return
 
-    processing = await update.message.reply_text(
+    processing = await message.reply_text(
         f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n\n"
         "⏳ Processing your link...",
         parse_mode=ParseMode.HTML,
@@ -364,96 +315,101 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     try:
         resolved = await resolve_link(url, detected)
-    except Exception:
-        if update.effective_user:
-            await log_request(update.effective_user.id, detected, "failed")
-        await processing.edit_text(
-            "❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
+    except Exception as exc:
+        logger.exception("Unhandled resolve error")
+        if user:
+            await log_request(user.id, detected, "failed")
+        try:
+            await processing.edit_text(
+                "❌ <b>Processing failed</b>\n\n"
+                f"{escape(type(exc).__name__)}\n\n"
+                "Please try again with a public/authorized link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+        except Exception:
+            pass
         return
 
     if not resolved.files:
-        if update.effective_user:
-            await log_request(update.effective_user.id, detected, "failed")
-        error_note = resolved.note or "No playable link was returned."
-        await processing.edit_text(
-            "⚠️ <b>Unable to process this link</b>\n\n"
-            f"{escape(error_note)}\n\n"
-            "Please try another public/authorized link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
+        if user:
+            await log_request(user.id, detected, "failed")
+        note = resolved.note or "No usable file was returned."
+        try:
+            await processing.edit_text(
+                "⚠️ <b>Unable to process this link</b>\n\n"
+                f"{escape(note)}\n\n"
+                "Please try again with a public/authorized link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+        except Exception:
+            pass
         return
 
-    if update.effective_user:
-        await log_request(update.effective_user.id, detected, "success")
-        # Store one history entry for the successfully processed share.
-        # The original public URL is kept so the user can reopen it later.
-        history_title = getattr(resolved.files[0], "title", "TeraBox file") or "TeraBox file"
+    if user:
+        await log_request(user.id, detected, "success")
         await log_history(
-            update.effective_user.id,
-            detected,
-            history_title,
+            user.id, detected,
+            resolved.files[0].title or "TeraBox file",
             resolved.original_url or url,
             "success",
         )
 
-    # Keep the whole result set available per user for compact callback data.
     context.user_data["last_resolution"] = resolved
     context.user_data["last_result"] = resolved.files[0]
 
     if len(resolved.files) > 1:
-        count = len(resolved.files)
-        message = (
-            "📁 <b>Multiple Files Found</b>\n\n"
-            f"✅ {count} files are available.\n"
-            "Select the file you want to open:"
-        )
-
         await processing.edit_text(
-            message,
+            "📁 <b>Multiple Files Found</b>\n\n"
+            f"✅ {len(resolved.files)} files are available.\n"
+            "Select the file you want to open:",
             parse_mode=ParseMode.HTML,
             reply_markup=file_selection_keyboard(tuple(resolved.files)),
         )
         return
 
-    result = resolved.files[0]
-    await processing.delete()
-    await _send_file_result(update.effective_message, result, resolved.original_url)
+    try:
+        await processing.delete()
+    except Exception:
+        pass
+    try:
+        await _send_file_result(message, resolved.files[0], resolved.original_url)
+    except Exception as exc:
+        logger.exception("Result delivery failed")
+        try:
+            await message.reply_text(
+                "⚠️ <b>Link resolved, but Telegram could not display the result.</b>\n\n"
+                f"{escape(type(exc).__name__)}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+        except Exception:
+            pass
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
+    if not query:
+        return
     await query.answer()
-
     data = query.data or ""
 
     if data.startswith("admin:"):
         if not await _is_admin(update):
             await query.answer("Admin only.", show_alert=True)
             return
-
         action = data.split(":", 1)[1]
         if action in {"stats", "refresh"}:
             await _send_admin_stats_message(query.message)
             await query.answer("Dashboard refreshed.")
             return
         if action == "users":
-            await query.edit_message_text(
-                await _admin_users_text(),
-                parse_mode=ParseMode.HTML,
-                reply_markup=admin_keyboard(),
-            )
+            await query.edit_message_text(await _admin_users_text(), parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
             await query.answer("Recent users")
             return
         if action == "requests":
-            await query.edit_message_text(
-                await _admin_requests_text(),
-                parse_mode=ParseMode.HTML,
-                reply_markup=admin_keyboard(),
-            )
+            await query.edit_message_text(await _admin_requests_text(), parse_mode=ParseMode.HTML, reply_markup=admin_keyboard())
             await query.answer("Recent requests")
             return
         if action == "close":
@@ -461,24 +417,15 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await query.message.delete()
             except Exception:
                 await query.edit_message_reply_markup(reply_markup=None)
-            await query.answer("Admin panel closed.")
             return
 
     if data == "home":
         context.user_data["selected_platform"] = "all"
-        await query.message.reply_text(
-            "🏠 <b>Home</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
+        await query.message.reply_text("🏠 <b>Home</b>", parse_mode=ParseMode.HTML, reply_markup=home_keyboard())
         return
 
     if data == "select_platform":
-        await query.message.reply_text(
-            "🎯 <b>Select Platform</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=platform_keyboard(),
-        )
+        await query.message.reply_text("🎯 <b>Select Platform</b>", parse_mode=ParseMode.HTML, reply_markup=platform_keyboard())
         return
 
     if data == "noop":
@@ -487,36 +434,28 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data == "files:back":
         await query.edit_message_reply_markup(reply_markup=None)
-        await query.answer("Back")
         return
 
     if data.startswith("file:"):
         resolved = context.user_data.get("last_resolution")
-        if not resolved or not getattr(resolved, "files", None):
-            await query.answer(
-                "File list expired. Please send the link again.",
-                show_alert=True,
-            )
+        if not resolved or not resolved.files:
+            await query.answer("File list expired. Send the link again.", show_alert=True)
             return
-
         try:
             index = int(data.split(":", 1)[1])
         except ValueError:
             await query.answer("Invalid file selection.", show_alert=True)
             return
-
-        if index < 0 or index >= len(resolved.files):
+        if not 0 <= index < len(resolved.files):
             await query.answer("That file is unavailable.", show_alert=True)
             return
 
         result = resolved.files[index]
         context.user_data["last_result"] = result
-
         try:
             await query.message.delete()
         except Exception:
             pass
-
         await _send_file_result(query.message, result, resolved.original_url)
         await query.answer(f"File {index + 1} selected.")
         return
@@ -524,15 +463,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     if data == "quality:menu":
         result = context.user_data.get("last_result")
         if not result or not result.quality_urls:
-            await query.answer(
-                "Quality options are no longer available. Please send the link again.",
-                show_alert=True,
-            )
+            await query.answer("Quality options expired. Send the link again.", show_alert=True)
             return
-
-        await query.edit_message_reply_markup(
-            reply_markup=quality_keyboard(tuple(result.quality_urls.keys()))
-        )
+        await query.edit_message_reply_markup(reply_markup=quality_keyboard(tuple(result.quality_urls)))
         await query.answer("Select a quality.")
         return
 
@@ -540,55 +473,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         result = context.user_data.get("last_result")
         resolved = context.user_data.get("last_resolution")
         if not result:
-            await query.answer(
-                "Result expired. Please send the link again.",
-                show_alert=True,
-            )
+            await query.answer("Result expired. Send the link again.", show_alert=True)
             return
-
-        original_url = resolved.original_url if resolved else ""
         await query.edit_message_reply_markup(
             reply_markup=result_keyboard(
-                result.playable_url,
-                result.download_url,
-                original_url,
-                quality_options=tuple(result.quality_urls.keys()),
+                result.playable_url, result.download_url,
+                resolved.original_url if resolved else "",
+                quality_options=tuple(result.quality_urls),
             )
         )
-        await query.answer("Back to result options.")
         return
 
     if data.startswith("quality:"):
         quality = data.split(":", 1)[1]
         result = context.user_data.get("last_result")
         resolved = context.user_data.get("last_resolution")
-
         if not result:
-            await query.answer(
-                "Result expired. Please send the link again.",
-                show_alert=True,
-            )
+            await query.answer("Result expired. Send the link again.", show_alert=True)
             return
-
         selected_url = result.quality_urls.get(quality)
         if not selected_url:
-            await query.answer(
-                "That quality is not available for this file.",
-                show_alert=True,
-            )
+            await query.answer("That quality is unavailable.", show_alert=True)
             return
-
         result.playable_url = selected_url
         result.quality = quality
         context.user_data["last_result"] = result
-
-        original_url = resolved.original_url if resolved else ""
         await query.edit_message_reply_markup(
             reply_markup=result_keyboard(
-                result.playable_url,
-                result.download_url,
-                original_url,
-                quality_options=tuple(result.quality_urls.keys()),
+                result.playable_url, result.download_url,
+                resolved.original_url if resolved else "",
+                quality_options=tuple(result.quality_urls),
             )
         )
         await query.answer(f"{quality} selected.")
@@ -596,21 +510,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if data.startswith("platform:"):
         platform = data.split(":", 1)[1]
+        if platform not in ("all", *PLATFORM_LABELS):
+            await query.answer("Invalid platform.", show_alert=True)
+            return
         context.user_data["selected_platform"] = platform
-
-        if platform == "all":
-            message = "✅ <b>All platforms selected.</b>\n\nSend a supported public link."
-        else:
-            message = (
-                f"✅ <b>{PLATFORM_LABELS[platform]}</b> selected.\n\n"
-                "Send its public link."
-            )
-
-        await query.message.reply_text(
-            message,
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
+        message = (
+            "✅ <b>All platforms selected.</b>\n\nSend a supported public link."
+            if platform == "all"
+            else f"✅ <b>{PLATFORM_LABELS[platform]}</b> selected.\n\nSend its public link."
         )
+        await query.message.reply_text(message, parse_mode=ParseMode.HTML, reply_markup=home_keyboard())
+
+
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.exception("Unhandled Telegram application error", exc_info=context.error)
+    try:
+        if isinstance(update, Update) and update.effective_message:
+            await update.effective_message.reply_text(
+                "⚠️ <b>Something went wrong.</b>\n\nPlease try the link again.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+    except Exception:
+        pass
 
 
 def register_handlers(app: Application) -> None:
@@ -620,6 +542,5 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("history", history))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CallbackQueryHandler(callback_handler))
-    app.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
-    )
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+    app.add_error_handler(global_error_handler)

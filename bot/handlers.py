@@ -17,8 +17,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if message is None:
         return
 
-    # The project expects the user-provided funny meme at assets/welcome.jpg.
-    # Until that file is added, the bot safely sends the welcome text only.
     if WELCOME_IMAGE.is_file():
         with WELCOME_IMAGE.open("rb") as photo:
             await message.reply_photo(
@@ -26,11 +24,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 caption=WELCOME_TEXT,
                 parse_mode="HTML",
             )
-    else:
-        await message.reply_text(
-            WELCOME_TEXT,
-            parse_mode="HTML",
-        )
+        return
+
+    await message.reply_text(WELCOME_TEXT, parse_mode="HTML")
 
 
 def register_handlers(application: Application) -> None:

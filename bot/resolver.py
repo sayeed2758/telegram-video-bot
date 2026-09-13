@@ -23,6 +23,10 @@ class FileResult:
     # Available quality -> stream URL mapping.
     quality_urls: dict[str, str] = field(default_factory=dict)
 
+    # Phase 5A: smart file classification.
+    file_type: str = "video"
+    mime_type: str = ""
+
 
 @dataclass
 class ResolveResult:
@@ -43,8 +47,6 @@ class ResolveResult:
     files: list[FileResult] = field(default_factory=list)
 
     note: str = ""
-
-
 
 
 TERABOX_FALLBACK_API = os.getenv(
@@ -114,6 +116,7 @@ async def _fallback_resolve(url: str) -> list[FileResult]:
         return []
 
     return []
+
 
 API_URL = "https://api.playterabox.com/api/proxy"
 API_CONCURRENCY = int(os.getenv("TERABOX_API_CONCURRENCY", "4"))
@@ -201,7 +204,10 @@ def _normalise_api_files(data: dict) -> list[dict]:
             candidates.extend(x for x in value if isinstance(x, dict))
         elif isinstance(value, dict):
             # Single-file response.
-            if any(k in value for k in ("name", "filename", "file_name", "server_filename", "dlink", "download_url", "download_link")):
+            if any(k in value for k in (
+                "name", "filename", "file_name", "server_filename",
+                "dlink", "download_url", "download_link",
+            )):
                 candidates.append(value)
             for key in ("list", "files", "items", "results"):
                 if isinstance(value.get(key), list):
@@ -225,11 +231,57 @@ def _normalise_api_files(data: dict) -> list[dict]:
     unique = []
     seen = set()
     for item in candidates:
-        marker = (_file_title(item), str(item.get("dlink") or item.get("download_url") or item.get("download_link") or ""))
+        marker = (
+            _file_title(item),
+            str(item.get("dlink") or item.get("download_url") or item.get("download_link") or ""),
+        )
         if marker not in seen:
             seen.add(marker)
             unique.append(item)
     return unique
+
+
+def _detect_file_type(title: str, mime_type: str = "", raw_type: str = "") -> str:
+    """Return a stable UI type: video, document, audio, image, or other."""
+    mime = (mime_type or "").lower().strip()
+    raw = (raw_type or "").lower().strip()
+    name = (title or "").lower().strip()
+
+    if mime.startswith("video/") or raw in {"video", "movie"}:
+        return "video"
+    if mime.startswith("audio/") or raw in {"audio", "music"}:
+        return "audio"
+    if mime.startswith("image/") or raw in {"image", "photo", "picture"}:
+        return "image"
+    if mime in {
+        "application/pdf", "application/msword", "application/rtf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "text/plain", "text/csv",
+    } or raw in {"document", "doc", "pdf", "file"}:
+        return "document"
+
+    document_exts = (
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+        ".txt", ".csv", ".rtf", ".odt",
+    )
+    audio_exts = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg")
+    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+    video_exts = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")
+
+    if name.endswith(document_exts):
+        return "document"
+    if name.endswith(audio_exts):
+        return "audio"
+    if name.endswith(image_exts):
+        return "image"
+    if name.endswith(video_exts):
+        return "video"
+
+    return "video"
 
 
 def _parse_file(file_data: dict) -> FileResult | None:
@@ -255,6 +307,15 @@ def _parse_file(file_data: dict) -> FileResult | None:
         or ""
     )
 
+    mime_type = str(
+        file_data.get("mime_type")
+        or file_data.get("mime")
+        or file_data.get("content_type")
+        or ""
+    ).strip()
+    raw_type = str(file_data.get("type") or file_data.get("category") or "").strip()
+    file_type = _detect_file_type(title, mime_type, raw_type)
+
     if not playable_url and not download_url:
         return None
 
@@ -270,6 +331,8 @@ def _parse_file(file_data: dict) -> FileResult | None:
         quality=quality,
         thumbnail=thumbnail,
         quality_urls=quality_urls,
+        file_type=file_type,
+        mime_type=mime_type,
     )
 
 
@@ -284,7 +347,7 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             note="No resolver configured for this platform yet.",
         )
         result.files = [
-            FileResult(title=result.title, playable_url=url)
+            FileResult(title=result.title, playable_url=url, file_type="video")
         ]
         return result
 
@@ -368,8 +431,6 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             files.append(parsed)
 
     if not files:
-        # The primary PlayTeraBox endpoint can return video fields only for some
-        # shares. Try a second resolver so documents such as PDFs can also work.
         fallback_files = await _fallback_resolve(url)
         if fallback_files:
             files = fallback_files

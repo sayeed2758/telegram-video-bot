@@ -40,20 +40,31 @@ def result_keyboard(
     download_url: str | None = None,
     original_url: str | None = None,
     quality_options: tuple[str, ...] = (),
+    file_type: str = "video",
 ) -> InlineKeyboardMarkup:
-    """Premium two-column result actions while keeping existing callback contracts."""
+    """Smart result actions without changing existing callback contracts."""
     rows = []
 
     primary = []
-    if playable_url:
+    if playable_url and file_type == "video":
         primary.append(InlineKeyboardButton("▶️ Play Online", url=playable_url))
+
     if download_url:
-        primary.append(InlineKeyboardButton("⬇️ Download", url=download_url))
+        if file_type == "document":
+            label = "📄 Download Document"
+        elif file_type == "audio":
+            label = "🎵 Download Audio"
+        elif file_type == "image":
+            label = "🖼 Download Image"
+        else:
+            label = "⬇️ Download"
+        primary.append(InlineKeyboardButton(label, url=download_url))
+
     if primary:
         rows.append(primary)
 
     secondary = []
-    if quality_options:
+    if quality_options and file_type == "video":
         secondary.append(
             InlineKeyboardButton("🎞 Change Quality", callback_data="quality:menu")
         )
@@ -111,11 +122,21 @@ def quality_keyboard(qualities: tuple[str, ...]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _file_icon(file_result) -> str:
+    file_type = str(getattr(file_result, "file_type", "video") or "video").lower()
+    return {
+        "document": "📄",
+        "audio": "🎵",
+        "image": "🖼",
+        "video": "🎬",
+    }.get(file_type, "📦")
+
+
 def file_selection_keyboard(
     files: tuple,
     max_files: int = 25,
 ) -> InlineKeyboardMarkup:
-    """Compact callback-only menu for multi-file shares."""
+    """Compact smart file menu for multi-file shares."""
     rows = []
 
     for index, file_result in enumerate(files[:max_files]):
@@ -123,10 +144,16 @@ def file_selection_keyboard(
         if len(name) > 36:
             name = name[:33] + "..."
 
+        size = str(getattr(file_result, "size_formatted", "") or "").strip()
+        suffix = f" • {size}" if size else ""
+        text = f"{_file_icon(file_result)} {index + 1}. {name}{suffix}"
+        if len(text) > 64:
+            text = text[:61] + "..."
+
         rows.append(
             [
                 InlineKeyboardButton(
-                    f"{index + 1}. {name}",
+                    text,
                     callback_data=f"file:{index}",
                 )
             ]

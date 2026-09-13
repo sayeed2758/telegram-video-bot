@@ -1,6 +1,6 @@
+import asyncio
 import logging
 import os
-import asyncio
 
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder
@@ -35,7 +35,6 @@ def main() -> None:
     register_handlers(application)
 
     webhook_url = f"{public_url}/{webhook_path}"
-
     logger.info("Starting webhook on 0.0.0.0:%s", port)
     logger.info("Webhook URL: %s", webhook_url)
 

@@ -23,10 +23,6 @@ class FileResult:
     # Available quality -> stream URL mapping.
     quality_urls: dict[str, str] = field(default_factory=dict)
 
-    # Phase 5A: smart file classification.
-    file_type: str = "video"
-    mime_type: str = ""
-
 
 @dataclass
 class ResolveResult:
@@ -49,74 +45,207 @@ class ResolveResult:
     note: str = ""
 
 
+
+
 TERABOX_FALLBACK_API = os.getenv(
     "TERABOX_FALLBACK_API",
+    "https://tera-core.vercel.app/api",
+).strip()
+
+TERABOX_LEGACY_FALLBACK_API = os.getenv(
+    "TERABOX_LEGACY_FALLBACK_API",
     "https://tbx-proxy.shakir-ansarii075.workers.dev/",
 ).strip()
 
+TERABOX_MIRROR_DOMAINS = {
+    "terabox.com",
+    "terabox.app",
+    "1024tera.com",
+    "1024terabox.com",
+    "teraboxshare.com",
+    "teraboxlink.com",
+    "terasharefile.com",
+    "terafileshare.com",
+    "terasharelink.com",
+}
+
 
 def _extract_shorturl(url: str) -> str:
-    """Extract the TeraBox share id used by fallback resolvers."""
+    """Extract the TeraBox share code from common /s/... and ?surl=... URLs."""
     try:
         parsed = urlparse(url)
+        query_values = parsed.query
+        if "surl=" in query_values:
+            from urllib.parse import parse_qs
+            values = parse_qs(query_values).get("surl") or []
+            if values:
+                return values[0].strip().strip("/")
         path = parsed.path.rstrip("/")
         match = re.search(r"/s/([^/]+)$", path)
         if match:
-            return match.group(1)
+            return match.group(1).strip()
     except Exception:
         pass
     return ""
 
 
-async def _fallback_resolve(url: str) -> list[FileResult]:
-    """Fallback resolver for non-video files such as PDF documents."""
+def _shorturl_variants(url: str) -> list[str]:
+    code = _extract_shorturl(url)
+    if not code:
+        return []
+
+    variants = [code]
+    if code.startswith("1") and len(code) > 1:
+        variants.append(code[1:])
+
+    # Keep order and uniqueness.
+    out = []
+    seen = set()
+    for value in variants:
+        if value and value not in seen:
+            seen.add(value)
+            out.append(value)
+    return out
+
+
+def _mirror_url_variants(url: str) -> list[str]:
+    """Try the supplied mirror and a canonical 1024terabox URL for the same share."""
+    variants = [url]
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host in TERABOX_MIRROR_DOMAINS:
+            path = parsed.path or ""
+            canonical = f"https://1024terabox.com{path}"
+            if canonical not in variants:
+                variants.append(canonical)
+    except Exception:
+        pass
+    return variants
+
+
+def _parse_gateway_files(data) -> list[FileResult]:
+    """Parse the documented tera-core gateway response into FileResult objects."""
+    if not isinstance(data, dict):
+        return []
+
+    containers = []
+    if isinstance(data.get("files"), list):
+        containers.extend(data["files"])
+    if isinstance(data.get("data"), dict):
+        nested = data["data"]
+        if isinstance(nested.get("files"), list):
+            containers.extend(nested["files"])
+        if isinstance(nested.get("list"), list):
+            containers.extend(nested["list"])
+    if isinstance(data.get("list"), list):
+        containers.extend(data["list"])
+    if isinstance(data.get("results"), list):
+        containers.extend(data["results"])
+
+    results = []
+    for item in containers:
+        if not isinstance(item, dict):
+            continue
+        parsed = _parse_file({
+            **item,
+            "name": item.get("name") or item.get("filename") or item.get("server_filename") or item.get("file_name"),
+            "download_url": item.get("download_url") or item.get("download_link") or item.get("direct_link") or item.get("dlink") or item.get("link"),
+            "size": item.get("size") or item.get("size_formatted") or "",
+            "thumbnail": item.get("thumbnail") or item.get("thumb") or "",
+            "playable_url": item.get("playable_url") or item.get("stream_url") or item.get("m3u8"),
+        })
+        if parsed:
+            results.append(parsed)
+    return results
+
+
+async def _gateway_resolve(url: str) -> list[FileResult]:
+    """Resolve a TeraBox mirror URL through the documented tera-core gateway."""
     if not TERABOX_FALLBACK_API:
         return []
 
-    surl = _extract_shorturl(url)
-    if not surl:
-        return []
+    for share_url in _mirror_url_variants(url):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as client:
+                response = await client.get(
+                    TERABOX_FALLBACK_API,
+                    params={"url": share_url, "resolve": "true"},
+                )
+                response.raise_for_status()
+                data = response.json()
+            files = _parse_gateway_files(data)
+            if files:
+                return files
 
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(25.0, connect=8.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(
-                TERABOX_FALLBACK_API,
-                params={"mode": "resolve", "surl": surl, "refresh": "1"},
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        payload = data.get("data") if isinstance(data, dict) else None
-        if isinstance(payload, dict):
-            parsed = _parse_file(payload)
-            if parsed:
-                return [parsed]
-
-            # Some gateways wrap the file under list/files/items.
-            for key in ("list", "files", "items", "results"):
-                value = payload.get(key)
-                if isinstance(value, list):
-                    results = []
-                    for item in value:
-                        parsed = _parse_file(item)
-                        if parsed:
-                            results.append(parsed)
-                    if results:
-                        return results
-
-        # Also accept a top-level file object.
-        if isinstance(data, dict):
-            parsed = _parse_file(data)
-            if parsed:
-                return [parsed]
-    except Exception:
-        return []
+            # Some versions expose the lower-level resolve mode.
+            for surl in _shorturl_variants(share_url):
+                response = await client.get(
+                    TERABOX_FALLBACK_API,
+                    params={"mode": "resolve", "surl": surl, "raw": "1"},
+                )
+                if response.is_success:
+                    files = _parse_gateway_files(response.json())
+                    if files:
+                        return files
+        except Exception:
+            continue
 
     return []
 
+
+async def _legacy_fallback_resolve(url: str) -> list[FileResult]:
+    """Legacy fallback kept as a second chance for older deployments."""
+    if not TERABOX_LEGACY_FALLBACK_API:
+        return []
+
+    for surl in _shorturl_variants(url):
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(25.0, connect=8.0),
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(
+                    TERABOX_LEGACY_FALLBACK_API,
+                    params={"mode": "resolve", "surl": surl, "refresh": "1"},
+                )
+                response.raise_for_status()
+                data = response.json()
+
+            payload = data.get("data") if isinstance(data, dict) else None
+            if isinstance(payload, dict):
+                parsed = _parse_file(payload)
+                if parsed:
+                    return [parsed]
+                for key in ("list", "files", "items", "results"):
+                    value = payload.get(key)
+                    if isinstance(value, list):
+                        results = []
+                        for item in value:
+                            parsed = _parse_file(item)
+                            if parsed:
+                                results.append(parsed)
+                        if results:
+                            return results
+
+            parsed = _parse_file(data) if isinstance(data, dict) else None
+            if parsed:
+                return [parsed]
+        except Exception:
+            continue
+
+    return []
+
+
+async def _fallback_resolve(url: str) -> list[FileResult]:
+    files = await _gateway_resolve(url)
+    if files:
+        return files
+    return await _legacy_fallback_resolve(url)
 
 API_URL = "https://api.playterabox.com/api/proxy"
 API_CONCURRENCY = int(os.getenv("TERABOX_API_CONCURRENCY", "4"))
@@ -204,10 +333,7 @@ def _normalise_api_files(data: dict) -> list[dict]:
             candidates.extend(x for x in value if isinstance(x, dict))
         elif isinstance(value, dict):
             # Single-file response.
-            if any(k in value for k in (
-                "name", "filename", "file_name", "server_filename",
-                "dlink", "download_url", "download_link",
-            )):
+            if any(k in value for k in ("name", "filename", "file_name", "server_filename", "dlink", "download_url", "download_link")):
                 candidates.append(value)
             for key in ("list", "files", "items", "results"):
                 if isinstance(value.get(key), list):
@@ -231,57 +357,11 @@ def _normalise_api_files(data: dict) -> list[dict]:
     unique = []
     seen = set()
     for item in candidates:
-        marker = (
-            _file_title(item),
-            str(item.get("dlink") or item.get("download_url") or item.get("download_link") or ""),
-        )
+        marker = (_file_title(item), str(item.get("dlink") or item.get("download_url") or item.get("download_link") or ""))
         if marker not in seen:
             seen.add(marker)
             unique.append(item)
     return unique
-
-
-def _detect_file_type(title: str, mime_type: str = "", raw_type: str = "") -> str:
-    """Return a stable UI type: video, document, audio, image, or other."""
-    mime = (mime_type or "").lower().strip()
-    raw = (raw_type or "").lower().strip()
-    name = (title or "").lower().strip()
-
-    if mime.startswith("video/") or raw in {"video", "movie"}:
-        return "video"
-    if mime.startswith("audio/") or raw in {"audio", "music"}:
-        return "audio"
-    if mime.startswith("image/") or raw in {"image", "photo", "picture"}:
-        return "image"
-    if mime in {
-        "application/pdf", "application/msword", "application/rtf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "application/vnd.ms-powerpoint",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "text/plain", "text/csv",
-    } or raw in {"document", "doc", "pdf", "file"}:
-        return "document"
-
-    document_exts = (
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-        ".txt", ".csv", ".rtf", ".odt",
-    )
-    audio_exts = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg")
-    image_exts = (".jpg", ".jpeg", ".png", ".webp", ".gif")
-    video_exts = (".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")
-
-    if name.endswith(document_exts):
-        return "document"
-    if name.endswith(audio_exts):
-        return "audio"
-    if name.endswith(image_exts):
-        return "image"
-    if name.endswith(video_exts):
-        return "video"
-
-    return "video"
 
 
 def _parse_file(file_data: dict) -> FileResult | None:
@@ -307,15 +387,6 @@ def _parse_file(file_data: dict) -> FileResult | None:
         or ""
     )
 
-    mime_type = str(
-        file_data.get("mime_type")
-        or file_data.get("mime")
-        or file_data.get("content_type")
-        or ""
-    ).strip()
-    raw_type = str(file_data.get("type") or file_data.get("category") or "").strip()
-    file_type = _detect_file_type(title, mime_type, raw_type)
-
     if not playable_url and not download_url:
         return None
 
@@ -331,8 +402,6 @@ def _parse_file(file_data: dict) -> FileResult | None:
         quality=quality,
         thumbnail=thumbnail,
         quality_urls=quality_urls,
-        file_type=file_type,
-        mime_type=mime_type,
     )
 
 
@@ -347,7 +416,7 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             note="No resolver configured for this platform yet.",
         )
         result.files = [
-            FileResult(title=result.title, playable_url=url, file_type="video")
+            FileResult(title=result.title, playable_url=url)
         ]
         return result
 
@@ -416,13 +485,6 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
         )
 
     raw_files = _normalise_api_files(data)
-    if not raw_files:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="No file was returned by the API.",
-        )
 
     files: list[FileResult] = []
     for raw_file in raw_files:
@@ -431,6 +493,9 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             files.append(parsed)
 
     if not files:
+        # The primary PlayTeraBox endpoint may return no usable file list for
+        # mirror-domain shares (including terasharefile.com). Always try the
+        # dedicated gateway fallbacks before reporting failure.
         fallback_files = await _fallback_resolve(url)
         if fallback_files:
             files = fallback_files
@@ -439,7 +504,11 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
                 platform=platform,
                 original_url=url,
                 title="TeraBox link",
-                note="No playable/downloadable file was returned by the available TeraBox resolvers.",
+                note=(
+                    "No playable/downloadable file was returned by the TeraBox "
+                    "resolvers. The share may be private, expired, password-protected, "
+                    "or temporarily blocked."
+                ),
             )
 
     first = files[0]

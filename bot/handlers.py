@@ -1,3 +1,4 @@
+import asyncio
 from html import escape
 import logging
 
@@ -314,7 +315,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
     try:
-        resolved = await resolve_link(url, detected)
+        resolved = await asyncio.wait_for(resolve_link(url, detected), timeout=45.0)
     except Exception as exc:
         logger.exception("Unhandled resolve error")
         if user:

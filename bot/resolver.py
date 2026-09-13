@@ -1,10 +1,9 @@
-import asyncio
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
@@ -13,15 +12,21 @@ logger = logging.getLogger(__name__)
 API_URL = "https://api.playterabox.com/api/proxy"
 PUBLIC_WORKER_API = os.getenv(
     "TERABOX_PUBLIC_WORKER_API",
-    "https://terabox-worker.robinkumarshakya103.workers.dev/api",
+    "",
 ).strip()
-GATEWAY_API = os.getenv(
-    "TERABOX_GATEWAY_API",
-    "https://terabox-gateway-production.up.railway.app/api",
-).strip()
+GATEWAY_API = os.getenv("TERABOX_GATEWAY_API", "").strip()
 
-REQUEST_TIMEOUT = float(os.getenv("TERABOX_RESOLVER_TIMEOUT", "12"))
-PAGE_TIMEOUT = float(os.getenv("TERABOX_PAGE_TIMEOUT", "10"))
+REQUEST_TIMEOUT = float(os.getenv("TERABOX_RESOLVER_TIMEOUT", "15"))
+PAGE_TIMEOUT = float(os.getenv("TERABOX_PAGE_TIMEOUT", "12"))
+
+# Current public share/list implementations use these hosts.  Keeping them
+# explicit is important: blindly turning a mirror hostname into www.<host>
+# produces invalid endpoints for some TeraBox mirrors.
+SHARE_LIST_ENDPOINTS = (
+    "https://www.terabox.app/share/list",
+    "https://www.1024tera.com/share/list",
+    "https://www.terabox.com/share/list",
+)
 
 
 @dataclass
@@ -71,7 +76,6 @@ def _first_url(data: dict, keys: tuple[str, ...]) -> str | None:
     for key in keys:
         value = data.get(key)
         if isinstance(value, str):
-            # Some APIs JSON-encode a URL.
             try:
                 decoded = json.loads(value) if value.startswith('"') else value
             except Exception:
@@ -107,7 +111,6 @@ def _format_size(value) -> str:
 
 def _extract_urls(data: dict) -> tuple[str | None, str | None, dict[str, str]]:
     quality_urls: dict[str, str] = {}
-
     for key in ("quality_urls", "stream_urls", "streams"):
         value = data.get(key)
         if isinstance(value, dict):
@@ -157,7 +160,6 @@ def _parse_file(data: dict) -> FileResult | None:
     )
     size = data.get("size_formatted") or _format_size(data.get("size") or data.get("sizebytes"))
 
-    # A direct dlink is a valid action URL even if it is not an HLS stream.
     if not playable:
         playable = download
 
@@ -176,17 +178,15 @@ def _parse_file(data: dict) -> FileResult | None:
 def _normalise_files(data) -> list[dict]:
     if not isinstance(data, dict):
         return []
-
-    candidates = []
+    candidates: list[dict] = []
 
     def add(value):
         if isinstance(value, list):
             candidates.extend(x for x in value if isinstance(x, dict))
         elif isinstance(value, dict):
-            # Single file object.
             if any(k in value for k in (
                 "name", "filename", "file_name", "server_filename",
-                "dlink", "download_url", "download_link", "direct_link"
+                "dlink", "download_url", "download_link", "direct_link",
             )):
                 candidates.append(value)
             for key in ("list", "files", "items", "results", "contents"):
@@ -229,11 +229,13 @@ def _extract_shorturl(url: str) -> str:
     return ""
 
 
-def _shorturl_variants(url: str) -> list[str]:
-    code = _extract_shorturl(url)
+def _shorturl_variants(url_or_code: str) -> list[str]:
+    code = _extract_shorturl(url_or_code) or url_or_code.strip()
     if not code:
         return []
     values = [code]
+    # TeraBox public share URLs commonly expose /s/1<shortcode>, while the
+    # share/list endpoint expects the shortcode without the leading 1.
     if code.startswith("1") and len(code) > 8:
         values.append(code[1:])
     return list(dict.fromkeys(values))
@@ -243,16 +245,16 @@ def _mirror_urls(url: str) -> list[str]:
     code = _extract_shorturl(url)
     if not code:
         return [url]
-    variants = _shorturl_variants(url)
+    values = _shorturl_variants(code)
     hosts = [
-        "terasharefile.com", "1024terabox.com", "terabox.com",
-        "terabox.app", "teraboxshare.com", "teraboxlink.com",
+        "terasharefile.com", "terabox.app", "terabox.com", "1024tera.com",
+        "1024terabox.com", "teraboxshare.com", "teraboxlink.com",
         "terafileshare.com", "terasharelink.com",
     ]
     result = [url]
     for host in hosts:
-        for code_variant in variants:
-            result.append(f"https://{host}/s/{code_variant}")
+        for variant in values:
+            result.append(f"https://{host}/s/{variant}")
     return list(dict.fromkeys(result))
 
 
@@ -266,6 +268,7 @@ def _browser_headers(referer: str = "") -> dict[str, str]:
         "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
     }
     if referer:
         headers["Referer"] = referer
@@ -275,9 +278,10 @@ def _browser_headers(referer: str = "") -> dict[str, str]:
 def _extract_js_token(html: str) -> str:
     patterns = [
         r'window\.jsToken\s*=\s*["\']([^"\']+)["\']',
-        r'"jsToken"\s*:\s*"([^"]+)"',
+        r'window\.jsToken[^=]{0,80}=\s*["\']([^"\']+)["\']',
         r'jsToken%22%3A%22([^"%]+)',
         r'fn%28%22([^%]+)%22%29',
+        r'fn%28%22([^"%]+)%22%29',
         r'jsToken\s*[:=]\s*["\']([^"\']+)["\']',
     ]
     for pattern in patterns:
@@ -299,59 +303,136 @@ def _extract_log_id(html: str) -> str:
     return ""
 
 
-async def _native_share_resolve(url: str) -> tuple[list[FileResult], str]:
-    """Resolve a public share using the share page + share/list flow.
+def _extract_bdstoken(html: str) -> str:
+    patterns = (
+        r'bdstoken["\']?\s*[:=]\s*["\']([^"\']+)',
+        r'"bdstoken"\s*:\s*"([^"]+)"',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, html, re.I)
+        if match:
+            return unquote(match.group(1))
+    return ""
 
-    This is deliberately limited to public share metadata. It does not attempt
-    passwords, private shares, captcha solving, or account access.
+
+def _parse_cookie_env() -> dict[str, str]:
+    raw = os.getenv("TERABOX_COOKIE", "").strip()
+    cookies: dict[str, str] = {}
+    if raw:
+        for part in raw.split(";"):
+            if "=" in part:
+                key, value = part.strip().split("=", 1)
+                if key.strip() and value.strip():
+                    cookies[key.strip()] = value.strip()
+    ndus = os.getenv("TERABOX_NDUS", "").strip()
+    if ndus:
+        cookies["ndus"] = ndus
+    return cookies
+
+
+def _api_error(data) -> str:
+    if not isinstance(data, dict):
+        return "Invalid JSON response."
+    errno = data.get("errno")
+    errmsg = data.get("errmsg") or data.get("error") or data.get("message")
+    if errno not in (None, 0, "0"):
+        return str(errmsg or f"TeraBox errno {errno}")
+    if errmsg and not data.get("list"):
+        return str(errmsg)
+    return ""
+
+
+async def _direct_link(client: httpx.AsyncClient, dlink: str, referer: str) -> str:
+    if not dlink:
+        return ""
+    try:
+        response = await client.get(
+            dlink,
+            headers=_browser_headers(referer),
+            follow_redirects=False,
+            timeout=httpx.Timeout(8.0, connect=4.0),
+        )
+        location = response.headers.get("location") or response.headers.get("Location")
+        if location:
+            return location
+    except Exception as exc:
+        logger.info("TeraBox dlink redirect lookup failed: %s", type(exc).__name__)
+    return ""
+
+
+async def _native_share_resolve(url: str) -> tuple[list[FileResult], str]:
+    """Resolve a public TeraBox share through the current share/list flow.
+
+    This handles public/authorized shares only. It does not solve passwords,
+    captchas, or private-account access.
     """
-    shorturls = _shorturl_variants(url)
-    if not shorturls:
+    if not _extract_shorturl(url):
         return [], "Invalid TeraBox share format."
 
-    headers = _browser_headers()
+    cookies = _parse_cookie_env()
+    client_headers = _browser_headers()
     timeout = httpx.Timeout(PAGE_TIMEOUT, connect=5.0)
+    attempts_log: list[str] = []
 
     async with httpx.AsyncClient(
-        timeout=timeout, follow_redirects=True, headers=headers
+        timeout=timeout,
+        follow_redirects=True,
+        headers=client_headers,
+        cookies=cookies,
     ) as client:
-        last_error = ""
-        for share_url in _mirror_urls(url)[:12]:
+        # The user's original share URL is preferred. Mirrors are only a
+        # fallback if the original page itself fails.
+        candidates = _mirror_urls(url)[:4]
+        page_ok = False
+
+        for share_url in candidates:
             try:
                 response = await client.get(share_url)
-                response.raise_for_status()
+                logger.info(
+                    "TeraBox share page: status=%s url=%s final=%s",
+                    response.status_code, share_url, response.url,
+                )
+                if response.status_code != 200:
+                    attempts_log.append(f"share page HTTP {response.status_code}")
+                    continue
 
+                page_ok = True
                 final_url = str(response.url)
                 html = response.text
                 token = _extract_js_token(html)
                 log_id = _extract_log_id(html)
+                bdstoken = _extract_bdstoken(html)
 
-                resolved_shorturls = []
-                final_surl = _extract_shorturl(final_url)
-                if final_surl:
-                    resolved_shorturls.append(final_surl)
-                resolved_shorturls.extend(shorturls)
+                surls = []
+                for value in (_extract_shorturl(final_url), _extract_shorturl(share_url), _extract_shorturl(url)):
+                    if value:
+                        surls.extend(_shorturl_variants(value))
+                surls = list(dict.fromkeys(surls))
+
+                logger.info(
+                    "TeraBox page metadata: final=%s surls=%s jsToken=%s dpLogId=%s bdstoken=%s",
+                    final_url,
+                    surls,
+                    bool(token),
+                    bool(log_id),
+                    bool(bdstoken),
+                )
 
                 if not token:
-                    last_error = "Share page did not expose a jsToken."
+                    attempts_log.append("jsToken not found")
                     continue
 
-                # The same API is served on the major TeraBox mirror hosts.
-                api_hosts = []
-                final_host = (urlparse(final_url).hostname or "").lower()
-                if final_host.startswith("www."):
-                    final_host = final_host[4:]
-                if final_host:
-                    api_hosts.append(final_host)
-                api_hosts.extend(["terabox.app", "1024tera.com", "terabox.com"])
-                api_hosts = list(dict.fromkeys(api_hosts))
-
-                for api_host in api_hosts:
-                    for surl in list(dict.fromkeys(resolved_shorturls)):
+                # Try the current endpoint order first.  The endpoint contract
+                # used by current open-source resolvers is share/list with
+                # app_id=250528, jsToken and shorturl. Some pages also expose
+                # dp-logid/bdstoken, so include those when available.
+                for endpoint in SHARE_LIST_ENDPOINTS:
+                    for surl in surls:
                         params = {
                             "app_id": "250528",
                             "web": "1",
                             "channel": "0",
+                            "clienttype": "0",
                             "jsToken": token,
                             "page": "1",
                             "num": "100",
@@ -363,68 +444,116 @@ async def _native_share_resolve(url: str) -> tuple[list[FileResult], str]:
                         }
                         if log_id:
                             params["dp-logid"] = log_id
+                        if bdstoken:
+                            params["bdstoken"] = bdstoken
 
-                        api_url = f"https://www.{api_host}/share/list"
                         try:
                             api_response = await client.get(
-                                api_url,
+                                endpoint,
                                 params=params,
-                                headers=_browser_headers(final_url),
+                                headers={
+                                    **_browser_headers(final_url),
+                                    "Accept": "application/json, text/plain, */*",
+                                    "X-Requested-With": "XMLHttpRequest",
+                                },
+                            )
+                            logger.info(
+                                "TeraBox share/list: status=%s endpoint=%s surl=%s",
+                                api_response.status_code, endpoint, surl,
                             )
                             if api_response.status_code != 200:
-                                last_error = f"share/list HTTP {api_response.status_code}"
+                                attempts_log.append(f"share/list HTTP {api_response.status_code}")
                                 continue
 
-                            data = api_response.json()
-                            errno = data.get("errno", 0) if isinstance(data, dict) else -1
-                            if str(errno) not in ("0",):
-                                message = data.get("errmsg") if isinstance(data, dict) else ""
-                                last_error = str(message or f"share/list errno {errno}")
+                            try:
+                                data = api_response.json()
+                            except ValueError:
+                                attempts_log.append("share/list returned invalid JSON")
+                                continue
+
+                            if isinstance(data, dict):
+                                logger.info(
+                                    "TeraBox share/list response: errno=%s keys=%s errmsg=%s list_count=%s",
+                                    data.get("errno"),
+                                    sorted(data.keys())[:20],
+                                    data.get("errmsg"),
+                                    len(data.get("list", [])) if isinstance(data.get("list"), list) else 0,
+                                )
+
+                            api_error = _api_error(data)
+                            if api_error:
+                                attempts_log.append(api_error)
                                 continue
 
                             raw_files = data.get("list", []) if isinstance(data, dict) else []
-                            files = []
+                            if not isinstance(raw_files, list):
+                                raw_files = []
+
+                            parsed_files: list[FileResult] = []
                             for raw in raw_files:
+                                if not isinstance(raw, dict):
+                                    continue
+                                # Skip folders at the top level. We can still
+                                # return them as unresolved rather than falsely
+                                # claiming a direct video link exists.
+                                if str(raw.get("isdir", "0")) in ("1", "true", "True"):
+                                    continue
                                 parsed = _parse_file(raw)
-                                if parsed:
-                                    files.append(parsed)
-                            if files:
+                                if not parsed:
+                                    continue
+
+                                # The dlink is the canonical share/download
+                                # action URL. A redirect lookup gives a more
+                                # direct playable URL when TeraBox exposes it.
+                                if parsed.download_url and parsed.download_url == raw.get("dlink"):
+                                    direct = await _direct_link(client, parsed.download_url, final_url)
+                                    if direct:
+                                        parsed.playable_url = direct
+                                parsed_files.append(parsed)
+
+                            if parsed_files:
                                 logger.info(
-                                    "Native TeraBox resolver succeeded: host=%s files=%s",
-                                    api_host, len(files),
+                                    "Native TeraBox resolver SUCCESS: %s file(s)",
+                                    len(parsed_files),
                                 )
-                                return files, ""
+                                return parsed_files, ""
 
-                        except (httpx.TimeoutException, httpx.HTTPError, ValueError) as exc:
-                            last_error = type(exc).__name__
-                            continue
-            except (httpx.TimeoutException, httpx.HTTPError) as exc:
-                last_error = type(exc).__name__
-                continue
+                            attempts_log.append("share/list returned no usable files")
 
-    return [], last_error or "Public share could not be resolved."
+                        except httpx.TimeoutException:
+                            attempts_log.append("share/list timeout")
+                        except httpx.HTTPError as exc:
+                            attempts_log.append(f"share/list {type(exc).__name__}")
+
+                # A successful page with a token should be enough to stop trying
+                # unrelated mirror pages. If this page's API endpoints fail,
+                # trying another mirror rarely improves the token/session pair.
+                if page_ok:
+                    break
+
+            except httpx.TimeoutException:
+                attempts_log.append("share page timeout")
+            except httpx.HTTPError as exc:
+                attempts_log.append(f"share page {type(exc).__name__}")
+
+    # Keep the Telegram message short while retaining useful server-side logs.
+    reason = attempts_log[-1] if attempts_log else "Public share could not be resolved."
+    logger.warning("Native TeraBox resolver failed: %s", " | ".join(attempts_log[-8:]))
+    return [], reason
 
 
 async def _api_resolve(url: str, api_key: str) -> tuple[list[FileResult], str]:
     if not api_key:
         return [], "TERABOX_API_KEY is not configured."
-
     try:
         timeout = httpx.Timeout(REQUEST_TIMEOUT, connect=5.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(API_URL, params={"secret": api_key, "url": url})
             response.raise_for_status()
             data = response.json()
-
-        files = []
-        for raw in _normalise_files(data):
-            parsed = _parse_file(raw)
-            if parsed:
-                files.append(parsed)
-        if files:
-            return files, ""
-
-        return [], "Primary API returned no usable files."
+        files = [_parse_file(x) for x in _normalise_files(data)]
+        files = [x for x in files if x]
+        return (files, "") if files else ([], "Primary API returned no usable files.")
     except httpx.TimeoutException:
         return [], "Primary API timed out."
     except httpx.HTTPStatusError as exc:
@@ -435,47 +564,43 @@ async def _api_resolve(url: str, api_key: str) -> tuple[list[FileResult], str]:
 
 async def _worker_resolve(url: str) -> tuple[list[FileResult], str]:
     if not PUBLIC_WORKER_API:
-        return [], "Public worker is disabled."
-
-    for candidate in _mirror_urls(url)[:8]:
-        try:
-            timeout = httpx.Timeout(REQUEST_TIMEOUT, connect=5.0)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(PUBLIC_WORKER_API, params={"url": candidate})
-                if response.status_code != 200:
-                    continue
-                data = response.json()
-            files = [_parse_file(x) for x in _normalise_files(data)]
-            files = [x for x in files if x]
-            if files:
-                return files, ""
-        except (httpx.TimeoutException, httpx.HTTPError, ValueError, json.JSONDecodeError):
-            continue
-    return [], "Public worker did not return usable files."
+        return [], "Public worker fallback is disabled."
+    try:
+        timeout = httpx.Timeout(min(REQUEST_TIMEOUT, 8.0), connect=4.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(PUBLIC_WORKER_API, params={"url": url})
+            logger.info("TeraBox worker fallback: HTTP %s", response.status_code)
+            if response.status_code != 200:
+                return [], f"Public worker HTTP {response.status_code}."
+            data = response.json()
+        files = [_parse_file(x) for x in _normalise_files(data)]
+        files = [x for x in files if x]
+        return (files, "") if files else ([], "Public worker returned no usable files.")
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        return [], f"Public worker {type(exc).__name__}."
 
 
 async def _gateway_resolve(url: str) -> tuple[list[FileResult], str]:
     if not GATEWAY_API:
-        return [], "Gateway is disabled."
-
-    for candidate in _mirror_urls(url)[:8]:
-        try:
-            timeout = httpx.Timeout(REQUEST_TIMEOUT, connect=5.0)
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response = await client.get(
-                    GATEWAY_API,
-                    params={"url": candidate, "resolve": "true"},
-                )
-                if response.status_code != 200:
-                    continue
-                data = response.json()
-            files = [_parse_file(x) for x in _normalise_files(data)]
-            files = [x for x in files if x]
-            if files:
-                return files, ""
-        except (httpx.TimeoutException, httpx.HTTPError, ValueError, json.JSONDecodeError):
-            continue
-    return [], "Gateway did not return usable files."
+        return [], "Gateway fallback is disabled."
+    try:
+        timeout = httpx.Timeout(min(REQUEST_TIMEOUT, 8.0), connect=4.0)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            response = await client.get(
+                GATEWAY_API,
+                params={"mode": "resolve", "url": url, "raw": "1"},
+            )
+            logger.info("TeraBox gateway fallback: HTTP %s", response.status_code)
+            if response.status_code != 200:
+                return [], f"Gateway HTTP {response.status_code}."
+            data = response.json()
+        if isinstance(data, dict) and isinstance(data.get("upstream"), dict):
+            data = data["upstream"]
+        files = [_parse_file(x) for x in _normalise_files(data)]
+        files = [x for x in files if x]
+        return (files, "") if files else ([], "Gateway returned no usable files.")
+    except (httpx.TimeoutException, httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        return [], f"Gateway {type(exc).__name__}."
 
 
 def _success(platform: str, original_url: str, files: list[FileResult]) -> ResolveResult:
@@ -508,51 +633,43 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
         result.files = [FileResult(title=result.title, playable_url=url)]
         return result
 
-    # Public share resolver is first because it does not depend on the user's
-    # API key and is the most direct path for public TeraBox shares.
-    attempts = []
+    attempts: list[str] = []
 
     try:
         files, error = await _native_share_resolve(url)
         if files:
             return _success(platform, url, files)
-        attempts.append(error)
+        attempts.append(f"native: {error}")
     except Exception as exc:
         logger.exception("Native TeraBox resolver failed")
-        attempts.append(type(exc).__name__)
+        attempts.append(f"native: {type(exc).__name__}")
 
     api_key = os.getenv("TERABOX_API_KEY", "").strip()
     files, error = await _api_resolve(url, api_key)
     if files:
         return _success(platform, url, files)
-    attempts.append(error)
+    attempts.append(f"api: {error}")
 
-    files, error = await _worker_resolve(url)
-    if files:
-        return _success(platform, url, files)
-    attempts.append(error)
+    # Optional external fallbacks are intentionally disabled by default. This
+    # prevents known-dead public endpoints from wasting webhook time.
+    if PUBLIC_WORKER_API:
+        files, error = await _worker_resolve(url)
+        if files:
+            return _success(platform, url, files)
+        attempts.append(f"worker: {error}")
 
-    files, error = await _gateway_resolve(url)
-    if files:
-        return _success(platform, url, files)
-    attempts.append(error)
+    if GATEWAY_API:
+        files, error = await _gateway_resolve(url)
+        if files:
+            return _success(platform, url, files)
+        attempts.append(f"gateway: {error}")
 
-    # Keep the user-facing error short, but make the Render logs useful.
-    clean = []
-    for item in attempts:
-        if item and item not in clean:
-            clean.append(item)
-    logger.warning("TeraBox resolution failed: %s", " | ".join(clean))
-
-    primary = next((x for x in clean if x and "Primary API" in x), "")
-    if primary:
-        note = primary + " Native/public fallback resolvers also returned no usable files."
-    else:
-        note = clean[0] if clean else "No resolver returned usable files."
-
+    logger.warning("TeraBox resolution failed: %s", " | ".join(attempts))
     return ResolveResult(
         platform=platform,
         original_url=url,
-        title="TeraBox link",
-        note=note,
+        note=(
+            "TeraBox could not return a downloadable file. "
+            "Check the Render logs for the exact share/list errno."
+        ),
     )

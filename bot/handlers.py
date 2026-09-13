@@ -88,13 +88,38 @@ def _result_details(result: FileResult | ResolveResult) -> str:
     return details
 
 
+def _is_document_result(result: FileResult) -> bool:
+    """Detect common document types so PDFs can be sent as Telegram documents."""
+    title = (getattr(result, "title", "") or "").lower().strip()
+    document_exts = (
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+        ".ppt", ".pptx", ".txt", ".csv",
+    )
+    return title.endswith(document_exts)
+
+
 async def _send_file_result(
     message,
     result: FileResult,
     original_url: str,
 ) -> None:
-    """Render a selected file using the same working Phase 4B UI."""
+    """Render videos normally and send PDFs/documents directly when possible."""
     details = _result_details(result)
+
+    # PDF/document support: when the resolver gives us a direct download URL,
+    # send the file itself instead of making the user open another button.
+    if _is_document_result(result) and result.download_url:
+        try:
+            await message.reply_document(
+                document=result.download_url,
+                caption=details,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception:
+            # Fall back to the normal result UI if Telegram cannot fetch the URL.
+            pass
+
     qualities = tuple(result.quality_urls.keys())
 
     markup = result_keyboard(

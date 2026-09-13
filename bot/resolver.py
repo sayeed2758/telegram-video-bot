@@ -93,6 +93,18 @@ def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, st
     if not download_url:
         download_url = _valid_url(file_data.get("download_link"))
 
+    # Some document responses use different field names. Accept only valid
+    # absolute HTTP/HTTPS URLs so PDFs can be delivered too.
+    if not download_url:
+        for key in (
+            "direct_download_url", "direct_url", "download",
+            "file_url", "url", "link", "dlink",
+        ):
+            candidate = _valid_url(file_data.get(key))
+            if candidate:
+                download_url = candidate
+                break
+
     return playable_url, download_url, quality_urls
 
 

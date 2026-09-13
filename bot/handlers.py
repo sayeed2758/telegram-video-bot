@@ -50,6 +50,13 @@ BRAND = "🎬 <b>Tera Video Bot</b>"
 BRAND_LINE = "✨ Fast • Clean • Simple"
 
 
+def _inline_home_keyboard() -> InlineKeyboardMarkup:
+    """Inline-only home navigation for messages being edited."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Home", callback_data="home")],
+    ])
+
+
 def _brand_block() -> str:
     return f"{BRAND}\n<i>{BRAND_LINE}</i>"
 
@@ -436,7 +443,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await processing.edit_text(
             f"{BRAND}\n\n❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
             parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
+            reply_markup=_inline_home_keyboard(),
         )
         return
 
@@ -449,7 +456,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"{escape(error_note)}\n\n"
             "Please try another public/authorized link.",
             parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
+            reply_markup=_inline_home_keyboard(),
         )
         return
 

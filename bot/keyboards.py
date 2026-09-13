@@ -27,3 +27,24 @@ def error_keyboard() -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def file_keyboard(direct_url: str | None) -> InlineKeyboardMarkup:
+    rows = []
+
+    if direct_url:
+        rows.append(
+            [
+                InlineKeyboardButton("▶️ Play / Open", url=direct_url),
+                InlineKeyboardButton("📥 Download", url=direct_url),
+            ]
+        )
+
+    rows.append(
+        [
+            InlineKeyboardButton("🔄 Process Again", callback_data="retry"),
+            InlineKeyboardButton("🏠 Start", callback_data="start"),
+        ]
+    )
+
+    return InlineKeyboardMarkup(rows)

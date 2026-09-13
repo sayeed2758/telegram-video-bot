@@ -10,7 +10,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot.keyboards import error_keyboard, welcome_keyboard
+from bot.keyboards import error_keyboard, file_keyboard, welcome_keyboard
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.resolver import resolve_link
 
@@ -124,13 +124,27 @@ async def process_url(
             lines.append(f"💾 Size: {item.size}")
             lines.append("")
 
-        lines.append("ℹ️ Direct download/streaming will be added in a later phase.")
+        # Phase 7 exposes a direct URL only when the resolver actually
+        # returned one. No guessed or fabricated links are created.
+        first_direct_url = next(
+            (item.direct_url for item in result.files if item.direct_url),
+            None,
+        )
+
+        if first_direct_url:
+            lines.append("🎬 <b>Your file is ready.</b>")
+            lines.append("Use the buttons below to open or download it.")
+        else:
+            lines.append(
+                "ℹ️ File metadata was found, but no direct file URL was returned yet."
+            )
+
         text = "\n".join(lines)
 
         await status.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=welcome_keyboard(),
+            reply_markup=file_keyboard(first_direct_url),
         )
         return
 

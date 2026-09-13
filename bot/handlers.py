@@ -264,12 +264,16 @@ async def text_handler(
         )
 
         await processing.edit_text(
-            "⚠️ <b>Unable to process this link</b>\n\n"
-            f"{error_note}\n\n"
-            "Please try another public/authorized link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
+    "⚠️ <b>Unable to process this link</b>\n\n"
+    f"{error_note}\n\n"
+    "Please try another public/authorized link.",
+    parse_mode=ParseMode.HTML,
+)
+
+await update.message.reply_text(
+    "🏠 Choose an option:",
+    reply_markup=home_keyboard(),
+)
 
 
 async def callback_handler(

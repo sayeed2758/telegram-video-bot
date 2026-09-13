@@ -18,6 +18,7 @@ from .database import (
     log_request,
     recent_requests,
     recent_users,
+    recent_history,
     request_stats,
     upsert_user,
 )
@@ -134,6 +135,66 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the current user's latest processed links."""
+    await _touch_user(update)
+
+    user = update.effective_user
+    if not user:
+        return
+
+    rows = await recent_history(user.id, 10)
+
+    if not rows:
+        await update.message.reply_text(
+            "🕘 <b>My History</b>\n\n"
+            "No processed links yet.\n\n"
+            "Send a supported public link and it will appear here.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(),
+        )
+        return
+
+    lines = ["🕘 <b>My History</b>", ""]
+    buttons = []
+
+    for index, row in enumerate(rows, 1):
+        platform = PLATFORM_LABELS.get(
+            row["platform"],
+            str(row["platform"]).title(),
+        )
+        status = "✅" if row["status"] == "success" else "❌"
+        title = escape(row["title"] or "TeraBox file")
+        if len(title) > 70:
+            title = title[:67] + "..."
+        created = escape(
+            row["created_at"].replace("T", " ")[:16]
+        )
+
+        lines.append(
+            f"{index}. {status} <b>{title}</b>\n"
+            f"   {escape(platform)} • {created}"
+        )
+
+        if row["status"] == "success" and row["original_url"]:
+            buttons.append([
+                InlineKeyboardButton(
+                    f"🔗 {index}. Open Link",
+                    url=row["original_url"],
+                )
+            ])
+
+    await update.message.reply_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            buttons + [
+                [InlineKeyboardButton("🏠 Home", callback_data="home")]
+            ]
+        ),
+    )
+
+
 async def _is_admin(update: Update) -> bool:
     user = update.effective_user
     return bool(ADMIN_ID and user and user.id == ADMIN_ID)
@@ -228,6 +289,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             parse_mode=ParseMode.HTML,
             reply_markup=platform_keyboard(),
         )
+        return
+
+    if text == "🕘 My History":
+        await history(update, context)
         return
 
     if text == "ℹ️ Help":
@@ -541,6 +606,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("history", history))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(

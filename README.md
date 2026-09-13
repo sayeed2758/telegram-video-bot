@@ -28,3 +28,20 @@ For public TeraBox/TeraBox mirror shares the resolver tries, in order:
 Only public/authorized shares are supported. Password-protected/private/captcha-gated shares are not bypassed.
 
 SQLite is kept because it is already part of the project. On Render Free, local SQLite data can be lost when the instance is replaced.
+
+
+## TeraBox resolver configuration
+
+The bot first uses the native public TeraBox share-page + `share/list` flow. Optional fallbacks are disabled unless explicitly configured.
+
+Optional Render environment variables:
+
+- `TERABOX_API_KEY` — optional PlayTeraBox API key.
+- `TERABOX_COOKIE` — optional TeraBox cookie string if a public share requires session cookies.
+- `TERABOX_NDUS` — optional `ndus` cookie value; used as a convenience if you do not want to put it in `TERABOX_COOKIE`.
+- `TERABOX_RESOLVER_TIMEOUT` — default `15`.
+- `TERABOX_PAGE_TIMEOUT` — default `12`.
+- `TERABOX_PUBLIC_WORKER_API` — optional external worker fallback; disabled by default.
+- `TERABOX_GATEWAY_API` — optional external gateway fallback; disabled by default.
+
+The resolver logs the TeraBox `errno`, response keys, and file count in Render logs. This makes a failed share diagnosable instead of silently falling through several dead endpoints.

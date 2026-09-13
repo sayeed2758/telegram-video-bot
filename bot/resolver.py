@@ -9,8 +9,16 @@ import httpx
 class ResolveResult:
     platform: str
     original_url: str
+
     title: str = ""
     playable_url: str | None = None
+    download_url: str | None = None
+
+    size_formatted: str = ""
+    duration: str = ""
+    quality: str = ""
+    thumbnail: str = ""
+
     note: str = ""
 
 
@@ -18,7 +26,7 @@ API_URL = "https://api.playterabox.com/api/proxy"
 
 
 def _valid_url(value) -> str | None:
-    """Return a valid HTTP/HTTPS URL as a string."""
+    """Return a valid HTTP/HTTPS URL."""
     if not isinstance(value, str):
         return None
 
@@ -32,49 +40,49 @@ def _valid_url(value) -> str | None:
 
         if parsed.scheme in ("http", "https") and parsed.netloc:
             return value
+
     except Exception:
         pass
 
     return None
 
 
-def _extract_playable_url(file_data: dict) -> str | None:
-    """Safely extract a playable/download URL from the API response."""
+def _extract_urls(file_data: dict) -> tuple[str | None, str | None]:
+    """Extract safe playable and download URLs."""
 
-    # 1. Direct stream URL
-    stream_url = _valid_url(file_data.get("stream_url"))
+    playable_url = None
+    download_url = None
 
-    if stream_url:
-        return stream_url
+    # Preferred streaming URL
+    playable_url = _valid_url(
+        file_data.get("stream_url")
+    )
 
-    # 2. Fast stream URLs
-    fast_stream = file_data.get("fast_stream_url")
+    # Quality-based streaming fallback
+    if not playable_url:
+        fast_stream = file_data.get("fast_stream_url")
 
-    if isinstance(fast_stream, dict):
-        # Prefer HD first
-        for quality in ("720p", "480p", "360p"):
-            stream = _valid_url(fast_stream.get(quality))
+        if isinstance(fast_stream, dict):
+            for quality in ("720p", "480p", "360p"):
+                candidate = _valid_url(
+                    fast_stream.get(quality)
+                )
 
-            if stream:
-                return stream
+                if candidate:
+                    playable_url = candidate
+                    break
 
-    # 3. Fast download URL
-    fast_download = _valid_url(
+    # Download URL
+    download_url = _valid_url(
         file_data.get("fast_download_link")
     )
 
-    if fast_download:
-        return fast_download
+    if not download_url:
+        download_url = _valid_url(
+            file_data.get("download_link")
+        )
 
-    # 4. Normal download URL
-    download_url = _valid_url(
-        file_data.get("download_link")
-    )
-
-    if download_url:
-        return download_url
-
-    return None
+    return playable_url, download_url
 
 
 async def resolve_link(
@@ -82,7 +90,7 @@ async def resolve_link(
     platform: str
 ) -> ResolveResult:
 
-    # Keep other platforms working exactly as before.
+    # Keep other platforms working.
     if platform != "terabox":
         return ResolveResult(
             platform=platform,
@@ -99,7 +107,6 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="TERABOX_API_KEY is not configured.",
         )
 
@@ -121,7 +128,6 @@ async def resolve_link(
             )
 
             response.raise_for_status()
-
             data = response.json()
 
     except httpx.TimeoutException:
@@ -129,7 +135,6 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="TeraBox API request timed out.",
         )
 
@@ -138,8 +143,10 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
-            note=f"TeraBox API returned HTTP {exc.response.status_code}.",
+            note=(
+                "TeraBox API returned "
+                f"HTTP {exc.response.status_code}."
+            ),
         )
 
     except Exception:
@@ -147,17 +154,14 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="Unable to connect to the TeraBox API.",
         )
 
-    # Make sure the API returned an object.
     if not isinstance(data, dict):
         return ResolveResult(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="Invalid API response.",
         )
 
@@ -168,11 +172,9 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="No file was returned by the API.",
         )
 
-    # Use the first file returned by the API.
     file_data = files[0]
 
     if not isinstance(file_data, dict):
@@ -180,7 +182,6 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            playable_url=None,
             note="Invalid file data returned by the API.",
         )
 
@@ -189,15 +190,40 @@ async def resolve_link(
     if not isinstance(title, str) or not title.strip():
         title = "TeraBox file"
 
-    playable_url = _extract_playable_url(file_data)
+    playable_url, download_url = _extract_urls(
+        file_data
+    )
 
-    if not playable_url:
+    size_formatted = file_data.get("size_formatted") or ""
+
+    duration = file_data.get("duration")
+
+    if duration is None:
+        duration = ""
+
+    duration = str(duration)
+
+    quality = file_data.get("quality") or ""
+
+    if isinstance(quality, (list, dict)):
+        quality = ""
+
+    quality = str(quality)
+
+    thumbnail = _valid_url(
+        file_data.get("thumbnail")
+    ) or ""
+
+    if not playable_url and not download_url:
         return ResolveResult(
             platform=platform,
             original_url=url,
             title=title,
-            playable_url=None,
-            note="The API did not return a valid playable URL.",
+            size_formatted=str(size_formatted),
+            duration=duration,
+            quality=quality,
+            thumbnail=thumbnail,
+            note="No valid playable/download URL was returned.",
         )
 
     return ResolveResult(
@@ -205,5 +231,10 @@ async def resolve_link(
         original_url=url,
         title=title,
         playable_url=playable_url,
+        download_url=download_url,
+        size_formatted=str(size_formatted),
+        duration=duration,
+        quality=quality,
+        thumbnail=thumbnail,
         note="TeraBox link resolved successfully.",
     )

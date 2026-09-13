@@ -225,12 +225,13 @@ async def text_handler(
         )
 
         await processing.edit_text(
-            details,
-            parse_mode=ParseMode.HTML,
-            reply_markup=result_keyboard(
-                result.playable_url,
-                result.download_url,
-            ),
+    details,
+    parse_mode=ParseMode.HTML,
+    reply_markup=result_keyboard(
+        result.playable_url,
+        result.download_url,
+        result.original_url,
+    ),
         )
 
     else:

@@ -10,6 +10,7 @@ from telegram.ext import (
 )
 
 from bot.platforms import extract_url
+from bot.resolver import resolve_link
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -45,11 +46,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     url = extract_url(message.text)
 
     if url:
-        await message.reply_text(
+        status = await message.reply_text(
             "🔗 <b>TeraBox link detected.</b>\n\n"
-            "⏳ Your link is ready for the next processing step.",
+            "⏳ Processing your link...",
             parse_mode="HTML",
         )
+
+        result = await resolve_link(url)
+
+        if result.ok:
+            lines = ["✅ <b>Link processed successfully.</b>", ""]
+            for index, item in enumerate(result.files, start=1):
+                lines.append(f"📄 <b>{index}. {item.name}</b>")
+                lines.append(f"💾 Size: {item.size}")
+                lines.append("")
+            lines.append("ℹ️ Direct download is not enabled in this phase.")
+            text = "\n".join(lines)
+        else:
+            text = (
+                "❌ <b>Could not process this TeraBox link.</b>\n\n"
+                f"Reason: {result.message}"
+            )
+
+        try:
+            await status.edit_text(text, parse_mode="HTML")
+        except Exception:
+            await message.reply_text(text, parse_mode="HTML")
         return
 
     await message.reply_text(

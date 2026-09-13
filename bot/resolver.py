@@ -1,3 +1,4 @@
+import asyncio
 import os
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
@@ -44,6 +45,8 @@ class ResolveResult:
 
 
 API_URL = "https://api.playterabox.com/api/proxy"
+API_CONCURRENCY = int(os.getenv("TERABOX_API_CONCURRENCY", "4"))
+_API_SEMAPHORE = asyncio.Semaphore(max(1, API_CONCURRENCY))
 
 
 def _valid_url(value) -> str | None:
@@ -157,31 +160,41 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
         )
 
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
-            follow_redirects=True,
-        ) as client:
-            response = await client.get(
-                API_URL,
-                params={"secret": api_key, "url": url},
-            )
-            response.raise_for_status()
-            data = response.json()
+        async with _API_SEMAPHORE:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(30.0, connect=10.0),
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(
+                    API_URL,
+                    params={"secret": api_key, "url": url},
+                )
+                response.raise_for_status()
+                data = response.json()
 
     except httpx.TimeoutException:
         return ResolveResult(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            note="TeraBox API request timed out.",
+            note="⏱️ TeraBox API took too long to respond. Please try again.",
         )
 
     except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status == 401 or status == 403:
+            note = "🔐 TeraBox API authentication was rejected. Check the API key."
+        elif status == 429:
+            note = "🚦 TeraBox API rate limit reached. Please wait and try again."
+        elif 500 <= status <= 599:
+            note = "🛠️ TeraBox service is temporarily unavailable. Please try again later."
+        else:
+            note = f"⚠️ TeraBox API returned HTTP {status}."
         return ResolveResult(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            note=f"TeraBox API returned HTTP {exc.response.status_code}.",
+            note=note,
         )
 
     except Exception:
@@ -189,7 +202,7 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            note="Unable to connect to the TeraBox API.",
+            note="⚠️ Unable to connect to the TeraBox service right now.",
         )
 
     if not isinstance(data, dict):

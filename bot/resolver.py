@@ -68,57 +68,108 @@ def _valid_url(value) -> str | None:
     return None
 
 
+def _first_url(data: dict, keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        candidate = _valid_url(data.get(key))
+        if candidate:
+            return candidate
+    return None
+
+
 def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, str]]:
-    """Extract playable/download URLs and all supported stream qualities."""
-    playable_url = _valid_url(file_data.get("stream_url"))
+    """Extract stream/download URLs from multiple TeraBox API response shapes."""
+    playable_url = _first_url(
+        file_data,
+        ("stream_url", "streaming_url", "playable_url", "play_url", "m3u8"),
+    )
     quality_urls: dict[str, str] = {}
 
-    fast_stream = file_data.get("fast_stream_url")
-    if isinstance(fast_stream, dict):
-        for quality, candidate in fast_stream.items():
-            candidate_url = _valid_url(candidate)
-            if candidate_url:
-                quality_name = str(quality).strip()
-                if quality_name:
-                    quality_urls[quality_name] = candidate_url
+    for field in ("fast_stream_url", "stream_urls", "quality_urls", "streams"):
+        value = file_data.get(field)
+        if isinstance(value, dict):
+            for quality, candidate in value.items():
+                candidate_url = _valid_url(candidate)
+                if candidate_url:
+                    quality_name = str(quality).strip()
+                    if quality_name:
+                        quality_urls[quality_name] = candidate_url
 
     if not playable_url:
-        for quality in ("1080p", "720p", "480p", "360p"):
+        for quality in ("1080p", "720p", "480p", "360p", "auto"):
             candidate = quality_urls.get(quality)
             if candidate:
                 playable_url = candidate
                 break
 
-    download_url = _valid_url(file_data.get("fast_download_link"))
-    if not download_url:
-        download_url = _valid_url(file_data.get("download_link"))
-
-    # Some document responses use different field names. Accept only valid
-    # absolute HTTP/HTTPS URLs so PDFs can be delivered too.
-    if not download_url:
-        for key in (
-            "direct_download_url", "direct_url", "download",
-            "file_url", "url", "link", "dlink",
-        ):
-            candidate = _valid_url(file_data.get(key))
-            if candidate:
-                download_url = candidate
-                break
+    download_url = _first_url(
+        file_data,
+        (
+            "fast_download_link", "download_link", "download_url",
+            "direct_download_url", "direct_url", "original_download_url",
+            "dlink", "download", "file_url", "url", "link",
+        ),
+    )
 
     return playable_url, download_url, quality_urls
+
+
+def _file_title(file_data: dict) -> str:
+    for key in ("name", "filename", "file_name", "server_filename", "title"):
+        value = file_data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "TeraBox file"
+
+
+def _normalise_api_files(data: dict) -> list[dict]:
+    """Accept common API wrappers: list/files/data/result."""
+    candidates = []
+
+    def add(value):
+        if isinstance(value, list):
+            candidates.extend(x for x in value if isinstance(x, dict))
+        elif isinstance(value, dict):
+            # Single-file response.
+            if any(k in value for k in ("name", "filename", "file_name", "server_filename", "dlink", "download_url", "download_link")):
+                candidates.append(value)
+            for key in ("list", "files", "items", "results"):
+                if isinstance(value.get(key), list):
+                    candidates.extend(x for x in value[key] if isinstance(x, dict))
+
+    add(data.get("list"))
+    add(data.get("files"))
+    add(data.get("items"))
+    add(data.get("results"))
+    add(data.get("data"))
+    add(data.get("result"))
+
+    # Some APIs return the actual file object inside data.result/file.
+    for parent_key in ("data", "result"):
+        parent = data.get(parent_key)
+        if isinstance(parent, dict):
+            for key in ("file", "item"):
+                add(parent.get(key))
+
+    # De-duplicate by title + URL while preserving order.
+    unique = []
+    seen = set()
+    for item in candidates:
+        marker = (_file_title(item), str(item.get("dlink") or item.get("download_url") or item.get("download_link") or ""))
+        if marker not in seen:
+            seen.add(marker)
+            unique.append(item)
+    return unique
 
 
 def _parse_file(file_data: dict) -> FileResult | None:
     if not isinstance(file_data, dict):
         return None
 
-    title = file_data.get("name")
-    if not isinstance(title, str) or not title.strip():
-        title = "TeraBox file"
-
+    title = _file_title(file_data)
     playable_url, download_url, quality_urls = _extract_urls(file_data)
 
-    size_formatted = str(file_data.get("size_formatted") or "")
+    size_value = file_data.get("size_formatted") or file_data.get("size") or ""
+    size_formatted = str(size_value)
     duration = str(file_data.get("duration") or "")
 
     quality = file_data.get("quality") or ""
@@ -126,7 +177,12 @@ def _parse_file(file_data: dict) -> FileResult | None:
         quality = ""
     quality = str(quality)
 
-    thumbnail = _valid_url(file_data.get("thumbnail")) or ""
+    thumbnail = (
+        _valid_url(file_data.get("thumbnail"))
+        or _valid_url(file_data.get("thumb"))
+        or _valid_url(file_data.get("thumbnail_url"))
+        or ""
+    )
 
     if not playable_url and not download_url:
         return None
@@ -174,7 +230,7 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
     try:
         async with _API_SEMAPHORE:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=httpx.Timeout(20.0, connect=8.0),
                 follow_redirects=True,
             ) as client:
                 response = await client.get(
@@ -225,8 +281,8 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             note="Invalid API response.",
         )
 
-    raw_files = data.get("list")
-    if not isinstance(raw_files, list) or not raw_files:
+    raw_files = _normalise_api_files(data)
+    if not raw_files:
         return ResolveResult(
             platform=platform,
             original_url=url,

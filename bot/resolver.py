@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from urllib.parse import quote
+from urllib.parse import urlparse
 
 import httpx
 
@@ -17,16 +17,72 @@ class ResolveResult:
 API_URL = "https://api.playterabox.com/api/proxy"
 
 
-async def resolve_link(url: str, platform: str) -> ResolveResult:
-    """
-    Resolve public/authorized TeraBox links through the configured
-    TeraBox API service.
+def _valid_url(value) -> str | None:
+    """Return a valid HTTP/HTTPS URL as a string."""
+    if not isinstance(value, str):
+        return None
 
-    The API key is read only from the server environment.
-    It is never exposed to Telegram users.
-    """
+    value = value.strip()
 
-    # Keep other platforms working with the existing behavior.
+    if not value:
+        return None
+
+    try:
+        parsed = urlparse(value)
+
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return value
+    except Exception:
+        pass
+
+    return None
+
+
+def _extract_playable_url(file_data: dict) -> str | None:
+    """Safely extract a playable/download URL from the API response."""
+
+    # 1. Direct stream URL
+    stream_url = _valid_url(file_data.get("stream_url"))
+
+    if stream_url:
+        return stream_url
+
+    # 2. Fast stream URLs
+    fast_stream = file_data.get("fast_stream_url")
+
+    if isinstance(fast_stream, dict):
+        # Prefer HD first
+        for quality in ("720p", "480p", "360p"):
+            stream = _valid_url(fast_stream.get(quality))
+
+            if stream:
+                return stream
+
+    # 3. Fast download URL
+    fast_download = _valid_url(
+        file_data.get("fast_download_link")
+    )
+
+    if fast_download:
+        return fast_download
+
+    # 4. Normal download URL
+    download_url = _valid_url(
+        file_data.get("download_link")
+    )
+
+    if download_url:
+        return download_url
+
+    return None
+
+
+async def resolve_link(
+    url: str,
+    platform: str
+) -> ResolveResult:
+
+    # Keep other platforms working exactly as before.
     if platform != "terabox":
         return ResolveResult(
             platform=platform,
@@ -49,7 +105,10 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=httpx.Timeout(
+                30.0,
+                connect=10.0
+            ),
             follow_redirects=True,
         ) as client:
 
@@ -62,18 +121,47 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             )
 
             response.raise_for_status()
+
             data = response.json()
 
-    except Exception as exc:
+    except httpx.TimeoutException:
         return ResolveResult(
             platform=platform,
             original_url=url,
             title="TeraBox link",
             playable_url=None,
-            note=f"API request failed: {type(exc).__name__}",
+            note="TeraBox API request timed out.",
         )
 
-    files = data.get("list") or []
+    except httpx.HTTPStatusError as exc:
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title="TeraBox link",
+            playable_url=None,
+            note=f"TeraBox API returned HTTP {exc.response.status_code}.",
+        )
+
+    except Exception:
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title="TeraBox link",
+            playable_url=None,
+            note="Unable to connect to the TeraBox API.",
+        )
+
+    # Make sure the API returned an object.
+    if not isinstance(data, dict):
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title="TeraBox link",
+            playable_url=None,
+            note="Invalid API response.",
+        )
+
+    files = data.get("list")
 
     if not isinstance(files, list) or not files:
         return ResolveResult(
@@ -81,34 +169,41 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             original_url=url,
             title="TeraBox link",
             playable_url=None,
-            note="No files were returned by the API.",
+            note="No file was returned by the API.",
         )
 
-    # Use the first returned file.
-    file_data = files[0] or {}
+    # Use the first file returned by the API.
+    file_data = files[0]
 
-    title = (
-        file_data.get("name")
-        or file_data.get("title")
-        or "TeraBox file"
-    )
-
-    # Prefer streaming URLs, then download URLs.
-    playable_url = (
-        file_data.get("stream_url")
-        or (
-            file_data.get("fast_stream_url", {}).get("720p")
-            if isinstance(file_data.get("fast_stream_url"), dict)
-            else None
+    if not isinstance(file_data, dict):
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title="TeraBox link",
+            playable_url=None,
+            note="Invalid file data returned by the API.",
         )
-        or file_data.get("fast_download_link")
-        or file_data.get("download_link")
-    )
+
+    title = file_data.get("name")
+
+    if not isinstance(title, str) or not title.strip():
+        title = "TeraBox file"
+
+    playable_url = _extract_playable_url(file_data)
+
+    if not playable_url:
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title=title,
+            playable_url=None,
+            note="The API did not return a valid playable URL.",
+        )
 
     return ResolveResult(
         platform=platform,
         original_url=url,
         title=title,
         playable_url=playable_url,
-        note="Resolved through TeraBox API.",
+        note="TeraBox link resolved successfully.",
     )

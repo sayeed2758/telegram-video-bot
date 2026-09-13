@@ -2,6 +2,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
+import re
 
 import httpx
 
@@ -43,6 +44,76 @@ class ResolveResult:
 
     note: str = ""
 
+
+
+
+TERABOX_FALLBACK_API = os.getenv(
+    "TERABOX_FALLBACK_API",
+    "https://tbx-proxy.shakir-ansarii075.workers.dev/",
+).strip()
+
+
+def _extract_shorturl(url: str) -> str:
+    """Extract the TeraBox share id used by fallback resolvers."""
+    try:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        match = re.search(r"/s/([^/]+)$", path)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+async def _fallback_resolve(url: str) -> list[FileResult]:
+    """Fallback resolver for non-video files such as PDF documents."""
+    if not TERABOX_FALLBACK_API:
+        return []
+
+    surl = _extract_shorturl(url)
+    if not surl:
+        return []
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(25.0, connect=8.0),
+            follow_redirects=True,
+        ) as client:
+            response = await client.get(
+                TERABOX_FALLBACK_API,
+                params={"mode": "resolve", "surl": surl, "refresh": "1"},
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        payload = data.get("data") if isinstance(data, dict) else None
+        if isinstance(payload, dict):
+            parsed = _parse_file(payload)
+            if parsed:
+                return [parsed]
+
+            # Some gateways wrap the file under list/files/items.
+            for key in ("list", "files", "items", "results"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    results = []
+                    for item in value:
+                        parsed = _parse_file(item)
+                        if parsed:
+                            results.append(parsed)
+                    if results:
+                        return results
+
+        # Also accept a top-level file object.
+        if isinstance(data, dict):
+            parsed = _parse_file(data)
+            if parsed:
+                return [parsed]
+    except Exception:
+        return []
+
+    return []
 
 API_URL = "https://api.playterabox.com/api/proxy"
 API_CONCURRENCY = int(os.getenv("TERABOX_API_CONCURRENCY", "4"))
@@ -297,12 +368,18 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             files.append(parsed)
 
     if not files:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="No playable/downloadable file was returned by the API.",
-        )
+        # The primary PlayTeraBox endpoint can return video fields only for some
+        # shares. Try a second resolver so documents such as PDFs can also work.
+        fallback_files = await _fallback_resolve(url)
+        if fallback_files:
+            files = fallback_files
+        else:
+            return ResolveResult(
+                platform=platform,
+                original_url=url,
+                title="TeraBox link",
+                note="No playable/downloadable file was returned by the available TeraBox resolvers.",
+            )
 
     first = files[0]
 

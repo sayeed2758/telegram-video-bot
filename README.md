@@ -1,27 +1,38 @@
-# Advance Tera Video Bot — Phase 3
+# Advance Tera Video Bot — Phase 4
 
-Phase 3 adds the first real TeraBox processing layer.
+Phase 4 makes the resolver verification-aware.
 
 ## Added
 
-- Public TeraBox share-page request
-- `jsToken` extraction
-- `dp-logid` extraction when available
-- TeraBox `share/list` metadata request
-- Multiple official/mirror API hosts
-- File name and size display
-- Clear failure reason in the bot
+- Current unified TeraBox proxy resolver
+- `refresh=1` resolution
+- Native TeraBox fallback
+- Optional verified session support through environment variables
+- `jsToken`, `dp-logid`, and `bdstoken` handling
+- Better verification/error messages
 
-## Deliberately not added
+## Environment
 
-- Direct download
-- Streaming
-- Password/private-share bypass
-- CAPTCHA/verification bypass
-- Third-party worker dependency
+Existing variables:
 
-This phase is intentionally limited to public-share metadata resolution so the
-resolver can be tested independently before download functionality is added.
+```text
+BOT_TOKEN=...
+RENDER_EXTERNAL_URL=...
+```
+
+Optional:
+
+```text
+TERABOX_PROXY_URL=https://tbx-proxy.shakir-ansarii075.workers.dev/
+TERABOX_COOKIE=...
+TERABOX_NDUS=...
+```
+
+`TERABOX_COOKIE` and `TERABOX_NDUS` are private credentials. Never put them in GitHub code or screenshots.
+
+## Important
+
+TeraBox can require a verified browser session for some shares. A public share URL can therefore open normally in a browser while the API returns `need verify`. This phase does not bypass CAPTCHA or other verification; it supports using a legitimate verified session when needed.
 
 ## Render
 
@@ -33,10 +44,4 @@ pip install -r requirements.txt
 Start:
 ```text
 python main.py
-```
-
-Required:
-```text
-BOT_TOKEN=your_telegram_bot_token
-RENDER_EXTERNAL_URL=https://your-service.onrender.com
 ```

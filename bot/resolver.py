@@ -1,5 +1,5 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
 import httpx
@@ -19,6 +19,9 @@ class ResolveResult:
     quality: str = ""
     thumbnail: str = ""
 
+    # Available quality -> stream URL mapping returned by the API.
+    quality_urls: dict[str, str] = field(default_factory=dict)
+
     note: str = ""
 
 
@@ -37,59 +40,50 @@ def _valid_url(value) -> str | None:
 
     try:
         parsed = urlparse(value)
-
         if parsed.scheme in ("http", "https") and parsed.netloc:
             return value
-
     except Exception:
         pass
 
     return None
 
 
-def _extract_urls(file_data: dict) -> tuple[str | None, str | None]:
-    """Extract safe playable and download URLs."""
-
+def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, str]]:
+    """Extract playable/download URLs and all supported stream qualities."""
     playable_url = None
     download_url = None
+    quality_urls: dict[str, str] = {}
 
-    # Preferred streaming URL
-    playable_url = _valid_url(
-        file_data.get("stream_url")
-    )
+    # Preferred direct stream URL.
+    playable_url = _valid_url(file_data.get("stream_url"))
 
-    # Quality-based streaming fallback
+    # Collect all quality-specific stream URLs when available.
+    fast_stream = file_data.get("fast_stream_url")
+    if isinstance(fast_stream, dict):
+        for quality, candidate in fast_stream.items():
+            candidate_url = _valid_url(candidate)
+            if candidate_url:
+                quality_name = str(quality).strip()
+                if quality_name:
+                    quality_urls[quality_name] = candidate_url
+
+    # If direct stream_url is unavailable, choose the highest common quality.
     if not playable_url:
-        fast_stream = file_data.get("fast_stream_url")
+        for quality in ("1080p", "720p", "480p", "360p"):
+            candidate = quality_urls.get(quality)
+            if candidate:
+                playable_url = candidate
+                break
 
-        if isinstance(fast_stream, dict):
-            for quality in ("720p", "480p", "360p"):
-                candidate = _valid_url(
-                    fast_stream.get(quality)
-                )
-
-                if candidate:
-                    playable_url = candidate
-                    break
-
-    # Download URL
-    download_url = _valid_url(
-        file_data.get("fast_download_link")
-    )
-
+    # Download URL.
+    download_url = _valid_url(file_data.get("fast_download_link"))
     if not download_url:
-        download_url = _valid_url(
-            file_data.get("download_link")
-        )
+        download_url = _valid_url(file_data.get("download_link"))
 
-    return playable_url, download_url
+    return playable_url, download_url, quality_urls
 
 
-async def resolve_link(
-    url: str,
-    platform: str
-) -> ResolveResult:
-
+async def resolve_link(url: str, platform: str) -> ResolveResult:
     # Keep other platforms working.
     if platform != "terabox":
         return ResolveResult(
@@ -112,13 +106,9 @@ async def resolve_link(
 
     try:
         async with httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                30.0,
-                connect=10.0
-            ),
+            timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=True,
         ) as client:
-
             response = await client.get(
                 API_URL,
                 params={
@@ -126,7 +116,6 @@ async def resolve_link(
                     "url": url,
                 },
             )
-
             response.raise_for_status()
             data = response.json()
 
@@ -143,10 +132,7 @@ async def resolve_link(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            note=(
-                "TeraBox API returned "
-                f"HTTP {exc.response.status_code}."
-            ),
+            note=f"TeraBox API returned HTTP {exc.response.status_code}.",
         )
 
     except Exception:
@@ -166,7 +152,6 @@ async def resolve_link(
         )
 
     files = data.get("list")
-
     if not isinstance(files, list) or not files:
         return ResolveResult(
             platform=platform,
@@ -176,7 +161,6 @@ async def resolve_link(
         )
 
     file_data = files[0]
-
     if not isinstance(file_data, dict):
         return ResolveResult(
             platform=platform,
@@ -186,33 +170,24 @@ async def resolve_link(
         )
 
     title = file_data.get("name")
-
     if not isinstance(title, str) or not title.strip():
         title = "TeraBox file"
 
-    playable_url, download_url = _extract_urls(
-        file_data
-    )
+    playable_url, download_url, quality_urls = _extract_urls(file_data)
 
     size_formatted = file_data.get("size_formatted") or ""
-
-    duration = file_data.get("duration")
-
-    if duration is None:
-        duration = ""
-
-    duration = str(duration)
+    duration = str(file_data.get("duration") or "")
 
     quality = file_data.get("quality") or ""
-
     if isinstance(quality, (list, dict)):
         quality = ""
-
     quality = str(quality)
 
-    thumbnail = _valid_url(
-        file_data.get("thumbnail")
-    ) or ""
+    thumbnail = _valid_url(file_data.get("thumbnail")) or ""
+
+    # When API gives a quality label but no direct stream_url, pick its matching URL.
+    if not playable_url and quality and quality in quality_urls:
+        playable_url = quality_urls[quality]
 
     if not playable_url and not download_url:
         return ResolveResult(
@@ -223,6 +198,7 @@ async def resolve_link(
             duration=duration,
             quality=quality,
             thumbnail=thumbnail,
+            quality_urls=quality_urls,
             note="No valid playable/download URL was returned.",
         )
 
@@ -236,5 +212,6 @@ async def resolve_link(
         duration=duration,
         quality=quality,
         thumbnail=thumbnail,
+        quality_urls=quality_urls,
         note="TeraBox link resolved successfully.",
     )

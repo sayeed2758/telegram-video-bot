@@ -17,6 +17,7 @@ from .keyboards import (
     home_keyboard,
     platform_keyboard,
     result_keyboard,
+    quality_keyboard,
 )
 from .platforms import (
     detect_platform,
@@ -232,10 +233,16 @@ async def text_handler(
     if result.playable_url:
         details = _result_details(result)
 
+        quality_options = tuple(result.quality_urls.keys())
+
+        # Keep the current result available for compact callback buttons.
+        context.user_data["last_result"] = result
+
         markup = result_keyboard(
             result.playable_url,
             result.download_url,
             result.original_url,
+            quality_options=quality_options,
         )
 
         # Phase 4A: show thumbnail when available.
@@ -308,6 +315,79 @@ async def callback_handler(
             "Use the Copy button shown with the link.",
             show_alert=True,
         )
+        return
+
+    if query.data == "quality:menu":
+        result = context.user_data.get("last_result")
+        if not result or not result.quality_urls:
+            await query.answer(
+                "Quality options are no longer available. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        qualities = tuple(result.quality_urls.keys())
+        await query.edit_message_reply_markup(
+            reply_markup=quality_keyboard(qualities)
+        )
+        await query.answer("Select a quality.")
+        return
+
+    if query.data == "quality:back":
+        result = context.user_data.get("last_result")
+        if not result:
+            await query.answer(
+                "Result expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        qualities = tuple(result.quality_urls.keys())
+        await query.edit_message_reply_markup(
+            reply_markup=result_keyboard(
+                result.playable_url,
+                result.download_url,
+                result.original_url,
+                quality_options=qualities,
+            )
+        )
+        await query.answer("Back to result options.")
+        return
+
+    if query.data.startswith("quality:"):
+        quality = query.data.split(":", 1)[1]
+        result = context.user_data.get("last_result")
+
+        if not result:
+            await query.answer(
+                "Result expired. Please send the link again.",
+                show_alert=True,
+            )
+            return
+
+        selected_url = result.quality_urls.get(quality)
+
+        if not selected_url:
+            await query.answer(
+                "That quality is not available for this file.",
+                show_alert=True,
+            )
+            return
+
+        # Update the stored result to the selected stream while preserving metadata.
+        result.playable_url = selected_url
+        result.quality = quality
+        context.user_data["last_result"] = result
+
+        await query.edit_message_reply_markup(
+            reply_markup=result_keyboard(
+                result.playable_url,
+                result.download_url,
+                result.original_url,
+                quality_options=tuple(result.quality_urls.keys()),
+            )
+        )
+        await query.answer(f"{quality} selected.")
         return
 
     if query.data.startswith("platform:"):

@@ -3,6 +3,7 @@ import asyncio
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -48,6 +49,71 @@ PLATFORM_LABELS = {
 
 BRAND = "🎬 <b>Tera Video Bot</b>"
 BRAND_LINE = "✨ Fast • Clean • Simple"
+
+RESOLVE_TIMEOUT_SECONDS = 45
+
+
+def _friendly_error(error: Exception) -> str:
+    """Convert common runtime/API errors into a user-readable reason."""
+    if isinstance(error, asyncio.TimeoutError):
+        return "⏱️ The resolver took too long to respond. Please try again."
+    if isinstance(error, TimedOut):
+        return "⏱️ Telegram timed out while sending the response. Please try again."
+    if isinstance(error, RetryAfter):
+        return f"🚦 Telegram rate limit reached. Please wait {int(error.retry_after)} seconds."
+    if isinstance(error, Forbidden):
+        return "🔒 Telegram did not allow the bot to send or edit this message."
+    if isinstance(error, BadRequest):
+        return f"⚠️ Telegram rejected the request: {error}"
+    if isinstance(error, NetworkError):
+        return "🌐 A network error occurred while contacting the service."
+    if isinstance(error, TelegramError):
+        return f"⚠️ Telegram error: {error}"
+
+    text = str(error).strip()
+    if not text:
+        return "⚠️ An unexpected error occurred while processing your request."
+    # Keep unexpected exception text compact and safe for HTML messages.
+    text = text.replace("\n", " ")
+    if len(text) > 300:
+        text = text[:297] + "..."
+    return f"⚠️ {text}"
+
+
+async def _safe_user_error(update: Update, context: ContextTypes.DEFAULT_TYPE, error: Exception) -> None:
+    """Always try to tell the user why a request failed instead of leaving it stuck."""
+    message = getattr(update, "effective_message", None)
+    if message is None:
+        return
+
+    reason = _friendly_error(error)
+    text = (
+        f"{BRAND}\n\n"
+        "❌ <b>Request failed</b>\n\n"
+        f"{escape(reason)}\n\n"
+        "Please try again or send a different public link."
+    )
+    try:
+        await message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(),
+        )
+    except Exception:
+        pass
+
+
+async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Last-resort error handler so unhandled exceptions never silently disappear."""
+    error = context.error
+    if error is None:
+        return
+    try:
+        if isinstance(update, Update):
+            await _safe_user_error(update, context, error)
+    except Exception:
+        pass
+
 
 
 def _inline_home_keyboard() -> InlineKeyboardMarkup:
@@ -341,161 +407,198 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _touch_user(update)
-    text = (update.message.text or "").strip()
+    """Process incoming links with explicit user-facing failure reasons."""
+    try:
+        await _touch_user(update)
+        text = (update.message.text or "").strip()
 
-    if text == "🎯 Select Platform":
-        await update.message.reply_text(
-            f"{BRAND}\n\n🎯 <b>Select Platform</b>",
-            parse_mode=ParseMode.HTML,
-            reply_markup=platform_keyboard(),
-        )
-        return
-
-    if text == "🕘 My History":
-        await history(update, context)
-        return
-
-    if text == "ℹ️ Help":
-        await help_command(update, context)
-        return
-
-    if not is_url(text):
-        await update.message.reply_text(
-            f"{BRAND}\n\n🔗 <b>Invalid link</b>\n\nPlease send a valid http/https link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
-        return
-
-    url = normalize_url(text)
-    detected = detect_platform(url)
-    selected = context.user_data.get("selected_platform", "all")
-
-    if not detected:
-        await update.message.reply_text(
-            f"{BRAND}\n\n⚠️ <b>Unsupported platform</b>\n\n"
-            "I currently recognize <b>TeraBox</b>, <b>DiskWala</b> and <b>Flezen</b> links.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
-        return
-
-    if selected != "all" and selected != detected:
-        await update.message.reply_text(
-            f"{BRAND}\n\n⚠️ You selected <b>{PLATFORM_LABELS[selected]}</b>, "
-            f"but this link is from <b>{PLATFORM_LABELS[detected]}</b>.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=home_keyboard(),
-        )
-        return
-
-    user = update.effective_user
-    if user and not await _is_admin(update):
-        allowed, retry_after, remaining_today = await check_and_record_request_limit(
-            user.id,
-            cooldown_seconds=10,
-            daily_limit=40,
-        )
-
-        if not allowed:
-            if retry_after > 0:
-                await update.message.reply_text(
-                    "⏳ <b>Please wait a moment.</b>\n\n"
-                    f"Try again in <b>{retry_after} seconds</b>.",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=home_keyboard(),
-                )
-            else:
-                await update.message.reply_text(
-                    "🚦 <b>Daily request limit reached.</b>\n\n"
-                    "You have reached today's processing limit. "
-                    "Please try again tomorrow.",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=home_keyboard(),
-                )
+        if text == "🎯 Select Platform":
+            await update.message.reply_text(
+                f"{BRAND}\n\n🎯 <b>Select Platform</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=platform_keyboard(),
+            )
             return
 
-    processing = await update.message.reply_text(
-        f"{BRAND}\n\n"
-        f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n"
-        "⏳ <b>Processing your link...</b>\n\n"
-        "Please wait a moment.",
-        parse_mode=ParseMode.HTML,
-    )
+        if text == "🕘 My History":
+            await history(update, context)
+            return
 
-    await asyncio.sleep(0.35)
-    try:
-        await processing.edit_text(
+        if text == "ℹ️ Help":
+            await help_command(update, context)
+            return
+
+        if not is_url(text):
+            await update.message.reply_text(
+                f"{BRAND}\n\n🔗 <b>Invalid link</b>\n\nPlease send a valid http/https link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+            return
+
+        url = normalize_url(text)
+        detected = detect_platform(url)
+        selected = context.user_data.get("selected_platform", "all")
+
+        if not detected:
+            await update.message.reply_text(
+                f"{BRAND}\n\n⚠️ <b>Unsupported platform</b>\n\n"
+                "I currently recognize <b>TeraBox</b>, <b>DiskWala</b> and <b>Flezen</b> links.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+            return
+
+        if selected != "all" and selected != detected:
+            await update.message.reply_text(
+                f"{BRAND}\n\n⚠️ You selected <b>{PLATFORM_LABELS[selected]}</b>, "
+                f"but this link is from <b>{PLATFORM_LABELS[detected]}</b>.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=home_keyboard(),
+            )
+            return
+
+        user = update.effective_user
+        if user and not await _is_admin(update):
+            allowed, retry_after, remaining_today = await check_and_record_request_limit(
+                user.id,
+                cooldown_seconds=10,
+                daily_limit=40,
+            )
+
+            if not allowed:
+                if retry_after > 0:
+                    await update.message.reply_text(
+                        "⏳ <b>Please wait a moment.</b>\n\n"
+                        f"Try again in <b>{retry_after} seconds</b>.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=home_keyboard(),
+                    )
+                else:
+                    await update.message.reply_text(
+                        "🚦 <b>Daily request limit reached.</b>\n\n"
+                        "You have reached today's processing limit. "
+                        "Please try again tomorrow.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=home_keyboard(),
+                    )
+                return
+
+        processing = await update.message.reply_text(
             f"{BRAND}\n\n"
-            f"🔎 <b>{PLATFORM_LABELS[detected]}</b> detected.\n"
-            "⚙️ <b>Fetching available result...</b>",
+            f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n"
+            "⏳ <b>Processing your link...</b>\n\n"
+            "Please wait a moment.",
             parse_mode=ParseMode.HTML,
         )
-    except Exception:
-        pass
 
-    try:
-        resolved = await resolve_link(url, detected)
-    except Exception:
-        if update.effective_user:
-            await log_request(update.effective_user.id, detected, "failed")
-        await processing.edit_text(
-            f"{BRAND}\n\n❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=_inline_home_keyboard(),
-        )
-        return
+        try:
+            await processing.edit_text(
+                f"{BRAND}\n\n"
+                f"🔎 <b>{PLATFORM_LABELS[detected]}</b> detected.\n"
+                "⚙️ <b>Fetching available result...</b>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception:
+            pass
 
-    if not resolved.files:
-        if update.effective_user:
-            await log_request(update.effective_user.id, detected, "failed")
-        error_note = resolved.note or "No playable link was returned."
-        await processing.edit_text(
-            f"{BRAND}\n\n⚠️ <b>Unable to process this link</b>\n\n"
-            f"{escape(error_note)}\n\n"
-            "Please try another public/authorized link.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=_inline_home_keyboard(),
-        )
-        return
+        try:
+            resolved = await asyncio.wait_for(
+                resolve_link(url, detected),
+                timeout=RESOLVE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            if user:
+                await log_request(user.id, detected, "failed")
+            await processing.edit_text(
+                f"{BRAND}\n\n❌ <b>Processing timed out</b>\n\n"
+                f"{escape(_friendly_error(exc))}\n\n"
+                "Please try again later or use another public link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_inline_home_keyboard(),
+            )
+            return
+        except Exception as exc:
+            if user:
+                await log_request(user.id, detected, "failed")
+            await processing.edit_text(
+                f"{BRAND}\n\n❌ <b>Processing failed</b>\n\n"
+                f"{escape(_friendly_error(exc))}\n\n"
+                "Please try again or use another public link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_inline_home_keyboard(),
+            )
+            return
 
-    if update.effective_user:
-        await log_request(update.effective_user.id, detected, "success")
-        # Store one history entry for the successfully processed share.
-        # The original public URL is kept so the user can reopen it later.
-        history_title = getattr(resolved.files[0], "title", "TeraBox file") or "TeraBox file"
-        await log_history(
-            update.effective_user.id,
-            detected,
-            history_title,
-            resolved.original_url or url,
-            "success",
-        )
+        if not resolved.files:
+            if user:
+                await log_request(user.id, detected, "failed")
+            error_note = resolved.note or "No playable/downloadable file was returned."
+            await processing.edit_text(
+                f"{BRAND}\n\n⚠️ <b>Unable to process this link</b>\n\n"
+                f"{escape(error_note)}\n\n"
+                "Please try another public/authorized link.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=_inline_home_keyboard(),
+            )
+            return
 
-    # Keep the whole result set available per user for compact callback data.
-    context.user_data["last_resolution"] = resolved
-    context.user_data["last_result"] = resolved.files[0]
+        try:
+            if user:
+                await log_request(user.id, detected, "success")
+                history_title = getattr(resolved.files[0], "title", "TeraBox file") or "TeraBox file"
+                await log_history(
+                    user.id,
+                    detected,
+                    history_title,
+                    resolved.original_url or url,
+                    "success",
+                )
 
-    if len(resolved.files) > 1:
-        count = len(resolved.files)
-        message = (
-            f"{BRAND}\n\n"
-            "📁 <b>Multiple Files Found</b>\n\n"
-            f"✅ {count} files are available.\n"
-            "Select the file you want to open:"
-        )
+            context.user_data["last_resolution"] = resolved
+            context.user_data["last_result"] = resolved.files[0]
 
-        await processing.edit_text(
-            message,
-            parse_mode=ParseMode.HTML,
-            reply_markup=file_selection_keyboard(tuple(resolved.files)),
-        )
-        return
+            if len(resolved.files) > 1:
+                count = len(resolved.files)
+                message = (
+                    f"{BRAND}\n\n"
+                    "📁 <b>Multiple Files Found</b>\n\n"
+                    f"✅ {count} files are available.\n"
+                    "Select the file you want to open:"
+                )
+                await processing.edit_text(
+                    message,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=file_selection_keyboard(tuple(resolved.files)),
+                )
+                return
 
-    result = resolved.files[0]
-    await processing.delete()
-    await _send_file_result(update.effective_message, result, resolved.original_url)
+            result = resolved.files[0]
+            try:
+                await processing.delete()
+            except Exception:
+                pass
+            await _send_file_result(update.effective_message, result, resolved.original_url)
+
+        except Exception as exc:
+            if user:
+                try:
+                    await log_request(user.id, detected, "failed")
+                except Exception:
+                    pass
+            try:
+                await processing.edit_text(
+                    f"{BRAND}\n\n❌ <b>Response delivery failed</b>\n\n"
+                    f"{escape(_friendly_error(exc))}\n\n"
+                    "The link was resolved, but the result could not be sent. Please try again.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_inline_home_keyboard(),
+                )
+            except Exception:
+                await _safe_user_error(update, context, exc)
+
+    except Exception as exc:
+        await _safe_user_error(update, context, exc)
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -800,3 +903,4 @@ def register_handlers(app: Application) -> None:
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)
     )
+    app.add_error_handler(global_error_handler)

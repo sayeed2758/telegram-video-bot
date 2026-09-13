@@ -154,7 +154,7 @@ async def process_url(
         text = (
             "🛡️ <b>TeraBox verification required.</b>\n\n"
             "TeraBox is asking for a verified session for this share.\n\n"
-            "You can retry after updating the resolver session settings."
+            "🔐 Add your valid TeraBox session in Render Environment Variables as ""<b>TERABOX_NDUS</b> (recommended) or <b>TERABOX_COOKIE</b>, then press 🔄 Retry.\n\n""⚠️ Never send your cookie/token in Telegram or GitHub."
         )
     else:
         text = (

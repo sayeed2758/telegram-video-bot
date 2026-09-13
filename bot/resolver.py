@@ -6,7 +6,7 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from bot.config import TERABOX_COOKIE, TERABOX_NDUS, TERABOX_PROXY_URL
+from bot.config import TERABOX_COOKIE, TERABOX_GATEWAY_URL, TERABOX_NDUS, TERABOX_PROXY_URL
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +213,62 @@ async def _proxy_resolve(client: httpx.AsyncClient, code: str) -> ResolveResult:
     )
 
 
+async def _gateway_resolve(
+    client: httpx.AsyncClient,
+    share_url: str,
+) -> ResolveResult:
+    """Use only an explicitly configured compatible gateway."""
+    if not TERABOX_GATEWAY_URL:
+        return ResolveResult(False, [], "No gateway resolver is configured.")
+
+    headers = dict(BROWSER_HEADERS)
+    cookie = _cookie_header()
+    if cookie:
+        headers["Cookie"] = cookie
+
+    try:
+        response = await client.get(
+            TERABOX_GATEWAY_URL,
+            params={"url": share_url, "resolve": "true"},
+            headers=headers,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("Configured gateway request failed: %s", exc)
+        return ResolveResult(
+            False, [], f"Configured gateway failed: {exc.__class__.__name__}"
+        )
+
+    logger.info("Configured gateway -> HTTP %s", response.status_code)
+
+    if response.status_code != 200:
+        return ResolveResult(
+            False, [], f"Configured gateway returned HTTP {response.status_code}."
+        )
+
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return ResolveResult(False, [], "Configured gateway returned invalid JSON.")
+
+    files = _parse_files(payload)
+    if files:
+        return ResolveResult(True, files, f"Found {len(files)} file(s).")
+
+    if isinstance(payload, dict):
+        for key in ("data", "result", "upstream"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                files = _parse_files(nested)
+                if files:
+                    return ResolveResult(True, files, f"Found {len(files)} file(s).")
+
+        reason = payload.get("errmsg") or payload.get("message") or payload.get("error")
+        if reason:
+            return ResolveResult(False, [], str(reason))
+
+    return ResolveResult(False, [], "Configured gateway returned no usable files.")
+
+
 async def _native_resolve(
     client: httpx.AsyncClient,
     url: str,
@@ -309,13 +365,19 @@ async def resolve_link(url: str) -> ResolveResult:
         headers=BROWSER_HEADERS,
         follow_redirects=True,
     ) as client:
-        # First use the current unified proxy. It is designed to handle
-        # TeraBox token extraction server-side.
-        proxy_result = await _proxy_resolve(client, code)
-        if proxy_result.ok:
-            return proxy_result
+        # 1. Optional gateway explicitly configured by the owner.
+        if TERABOX_GATEWAY_URL:
+            gateway_result = await _gateway_resolve(client, url)
+            if gateway_result.ok:
+                return gateway_result
 
-        # Then try the native flow, carrying an optional verified session.
+        # 2. Optional unified proxy explicitly configured by the owner.
+        if TERABOX_PROXY_URL:
+            proxy_result = await _proxy_resolve(client, code)
+            if proxy_result.ok:
+                return proxy_result
+
+        # 3. Native TeraBox flow with optional verified session.
         native_result = await _native_resolve(client, url, code)
         if native_result.ok:
             return native_result
@@ -324,8 +386,8 @@ async def resolve_link(url: str) -> ResolveResult:
         if "need verify" in reason.lower() or "verify" in reason.lower():
             if not _cookie_header():
                 reason += (
-                    " TeraBox is requiring a verified session. "
-                    "This bot can use TERABOX_COOKIE or TERABOX_NDUS if you provide one."
+                    " Add a valid TeraBox session using TERABOX_NDUS or "
+                    "TERABOX_COOKIE in Render Environment Variables."
                 )
 
         return ResolveResult(False, [], reason)

@@ -1,18 +1,27 @@
-# Advance Tera Video Bot — Phase 2
+# Advance Tera Video Bot — Phase 3
 
-Phase 2 adds safe TeraBox link detection.
+Phase 3 adds the first real TeraBox processing layer.
 
 ## Added
 
-- TeraBox domain detection
-- TeraBox mirror-domain detection
-- Unsupported-link response
-- `/start` welcome flow from Phase 1
-- Render webhook configuration from Phase 1
+- Public TeraBox share-page request
+- `jsToken` extraction
+- `dp-logid` extraction when available
+- TeraBox `share/list` metadata request
+- Multiple official/mirror API hosts
+- File name and size display
+- Clear failure reason in the bot
 
-## Not added yet
+## Deliberately not added
 
-There is deliberately **no TeraBox resolver/API/download logic** in this phase.
+- Direct download
+- Streaming
+- Password/private-share bypass
+- CAPTCHA/verification bypass
+- Third-party worker dependency
+
+This phase is intentionally limited to public-share metadata resolution so the
+resolver can be tested independently before download functionality is added.
 
 ## Render
 
@@ -31,10 +40,3 @@ Required:
 BOT_TOKEN=your_telegram_bot_token
 RENDER_EXTERNAL_URL=https://your-service.onrender.com
 ```
-
-Optional:
-```text
-WEBHOOK_PATH=telegram-webhook
-```
-
-`PORT` is provided by Render.

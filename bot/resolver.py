@@ -506,6 +506,62 @@ def _parse_file(file_data: dict) -> FileResult | None:
     )
 
 
+async def _primary_resolve(url: str, api_key: str) -> tuple[list[FileResult], str]:
+    """Resolve through the configured PlayTeraBox API.
+
+    Returns (files, failure_reason). A primary timeout/error is deliberately
+    returned as a reason instead of aborting the whole resolver, because the
+    mirror/public fallbacks may still be able to resolve the same share.
+    """
+    if not api_key:
+        return [], "TERABOX_API_KEY is not configured."
+
+    try:
+        async with _API_SEMAPHORE:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(12.0, connect=5.0),
+                follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+            ) as client:
+                response = await client.get(
+                    API_URL,
+                    params={"secret": api_key, "url": url},
+                )
+                response.raise_for_status()
+                data = response.json()
+    except httpx.TimeoutException:
+        return [], "Primary TeraBox API timed out."
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        if status == 401 or status == 403:
+            return [], "Primary TeraBox API rejected the API key."
+        if status == 429:
+            return [], "Primary TeraBox API rate limit reached."
+        return [], f"Primary TeraBox API returned HTTP {status}."
+    except Exception as exc:
+        return [], f"Primary TeraBox API error: {str(exc)[:160]}"
+
+    if not isinstance(data, dict):
+        return [], "Primary TeraBox API returned an invalid response."
+
+    files: list[FileResult] = []
+    for raw_file in _normalise_api_files(data):
+        parsed = _parse_file(raw_file)
+        if parsed:
+            files.append(parsed)
+
+    if files:
+        return files, ""
+    return [], "Primary TeraBox API returned no usable files."
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlparse(url).hostname or "").lower().strip()
+    except Exception:
+        return ""
+
+
 async def resolve_link(url: str, platform: str) -> ResolveResult:
     # Preserve the existing placeholder behavior for other platforms.
     if platform != "terabox":
@@ -522,95 +578,69 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
         return result
 
     api_key = os.getenv("TERABOX_API_KEY", "").strip()
+    host = _host(url)
 
-    if not api_key:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="TERABOX_API_KEY is not configured.",
-        )
+    # IMPORTANT: terasharefile.com and other mirror domains are often slower
+    # through the primary PlayTeraBox API. Resolve those through the dedicated
+    # public/gateway fallbacks FIRST, instead of waiting for the primary API
+    # to time out and telling the user that the link failed.
+    mirror_first = host in {
+        "terasharefile.com",
+        "terasharelink.com",
+        "terafileshare.com",
+        "teraboxshare.com",
+        "teraboxlink.com",
+    }
 
-    try:
-        async with _API_SEMAPHORE:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(20.0, connect=8.0),
-                follow_redirects=True,
-            ) as client:
-                response = await client.get(
-                    API_URL,
-                    params={"secret": api_key, "url": url},
-                )
-                response.raise_for_status()
-                data = response.json()
+    failure_reasons: list[str] = []
 
-    except httpx.TimeoutException:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="⏱️ TeraBox API took too long to respond. Please try again.",
-        )
+    async def try_fallbacks() -> list[FileResult]:
+        try:
+            return await asyncio.wait_for(
+                _fallback_resolve(url),
+                timeout=28.0,
+            )
+        except asyncio.TimeoutError:
+            failure_reasons.append("Fallback resolver timed out.")
+            return []
+        except Exception as exc:
+            failure_reasons.append(f"Fallback resolver error: {str(exc)[:160]}")
+            return []
 
-    except httpx.HTTPStatusError as exc:
-        status = exc.response.status_code
-        if status == 401 or status == 403:
-            note = "🔐 TeraBox API authentication was rejected. Check the API key."
-        elif status == 429:
-            note = "🚦 TeraBox API rate limit reached. Please wait and try again."
-        elif 500 <= status <= 599:
-            note = "🛠️ TeraBox service is temporarily unavailable. Please try again later."
-        else:
-            note = f"⚠️ TeraBox API returned HTTP {status}."
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note=note,
-        )
+    async def try_primary() -> list[FileResult]:
+        files, reason = await _primary_resolve(url, api_key)
+        if reason:
+            failure_reasons.append(reason)
+        return files
 
-    except Exception:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="⚠️ Unable to connect to the TeraBox service right now.",
-        )
-
-    if not isinstance(data, dict):
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title="TeraBox link",
-            note="Invalid API response.",
-        )
-
-    raw_files = _normalise_api_files(data)
-
-    files: list[FileResult] = []
-    for raw_file in raw_files:
-        parsed = _parse_file(raw_file)
-        if parsed:
-            files.append(parsed)
+    # Mirror links: fallback first. Normal TeraBox links keep the old primary
+    # API-first behavior, so existing working links are not unnecessarily
+    # changed.
+    if mirror_first:
+        files = await try_fallbacks()
+        if not files:
+            files = await try_primary()
+    else:
+        files = await try_primary()
+        if not files:
+            files = await try_fallbacks()
 
     if not files:
-        # The primary PlayTeraBox endpoint may return no usable file list for
-        # mirror-domain shares (including terasharefile.com). Always try the
-        # dedicated gateway fallbacks before reporting failure.
-        fallback_files = await _fallback_resolve(url)
-        if fallback_files:
-            files = fallback_files
+        # Keep the reason useful without exposing internal stack traces.
+        if failure_reasons:
+            reason_text = " • ".join(dict.fromkeys(failure_reasons[-3:]))
         else:
-            return ResolveResult(
-                platform=platform,
-                original_url=url,
-                title="TeraBox link",
-                note=(
-                    "No playable/downloadable file was returned by the TeraBox "
-                    "resolvers. The share may be private, expired, password-protected, "
-                    "or temporarily blocked."
-                ),
-            )
+            reason_text = "All configured TeraBox resolvers failed."
+
+        return ResolveResult(
+            platform=platform,
+            original_url=url,
+            title="TeraBox link",
+            note=(
+                "⚠️ Unable to resolve this share right now. "
+                + reason_text
+            ),
+        )
 
     first = files[0]
 

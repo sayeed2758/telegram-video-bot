@@ -206,3 +206,90 @@ async def check_and_record_request_limit(
 
     return True, 0, daily_limit - daily_count
 
+
+
+async def log_history(
+    user_id: int,
+    platform: str,
+    title: str,
+    original_url: str,
+    status: str = "success",
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    safe_title = (title or "TeraBox file").strip()[:500]
+    with _connect() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                title TEXT NOT NULL,
+                original_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+        )
+        con.execute(
+            """
+            INSERT INTO user_history
+                (user_id, platform, title, original_url, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, platform, safe_title, original_url, status, now),
+        )
+        # Keep the latest 30 records per user to avoid unbounded growth.
+        con.execute(
+            """
+            DELETE FROM user_history
+            WHERE user_id = ?
+              AND id NOT IN (
+                  SELECT id FROM user_history
+                  WHERE user_id = ?
+                  ORDER BY id DESC
+                  LIMIT 30
+              )
+            """,
+            (user_id, user_id),
+        )
+        con.commit()
+
+
+async def recent_history(user_id: int, limit: int = 10) -> list[dict]:
+    limit = max(1, min(int(limit), 15))
+    with _connect() as con:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                title TEXT NOT NULL,
+                original_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """,
+        )
+        rows = con.execute(
+            """
+            SELECT id, platform, title, original_url, status, created_at
+            FROM user_history
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+    return [
+        {
+            'id': int(row[0]),
+            'platform': row[1],
+            'title': row[2],
+            'original_url': row[3],
+            'status': row[4],
+            'created_at': row[5],
+        }
+        for row in rows
+    ]

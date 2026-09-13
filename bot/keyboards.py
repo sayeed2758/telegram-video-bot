@@ -11,6 +11,7 @@ def home_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [
             [KeyboardButton("🎯 Select Platform")],
+            [KeyboardButton("🕘 My History")],
             [KeyboardButton("ℹ️ Help")],
         ],
         resize_keyboard=True,

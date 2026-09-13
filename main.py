@@ -15,17 +15,42 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram-webhook").strip("/")
 
 
 def main() -> None:
     if not BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is missing from environment variables.")
 
+    if not RENDER_EXTERNAL_URL:
+        raise RuntimeError(
+            "RENDER_EXTERNAL_URL is missing. Set it to your Render service URL."
+        )
+
+    port_raw = os.getenv("PORT", "10000").strip()
+    try:
+        port = int(port_raw)
+    except ValueError as exc:
+        raise RuntimeError(f"Invalid PORT value: {port_raw!r}") from exc
+
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     register_handlers(application)
 
-    logger.info("Advance Tera Video Bot started.")
-    application.run_polling(drop_pending_updates=True)
+    webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
+
+    logger.info("Starting Advance Tera Video Bot...")
+    logger.info("Webhook URL: %s", webhook_url)
+    logger.info("Listening on 0.0.0.0:%s", port)
+
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        url_path=WEBHOOK_PATH,
+        webhook_url=webhook_url,
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query"],
+    )
 
 
 if __name__ == "__main__":

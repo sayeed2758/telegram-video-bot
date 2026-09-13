@@ -137,43 +137,13 @@ def _home_message(selected_platform: str = "all") -> str:
     )
 
 
-def _file_type(result: FileResult) -> str:
-    """Safely classify a resolved file without changing the resolver contract."""
-    title = (getattr(result, "title", "") or "").lower().strip()
-    mime = (getattr(result, "mime_type", "") or "").lower().strip()
-
-    if mime.startswith("video/") or title.endswith((".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v")):
-        return "video"
-    if mime.startswith("audio/") or title.endswith((".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg")):
-        return "audio"
-    if mime.startswith("image/") or title.endswith((".jpg", ".jpeg", ".png", ".webp", ".gif")):
-        return "image"
-    if mime == "application/pdf" or title.endswith((
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-        ".txt", ".csv", ".rtf", ".odt",
-    )):
-        return "document"
-    return "video"
-
-
-def _file_type_label(file_type: str) -> str:
-    return {
-        "video": "🎬 Video",
-        "document": "📄 Document",
-        "audio": "🎵 Audio",
-        "image": "🖼 Image",
-    }.get(file_type, "📦 File")
-
-
 def _result_details(result: FileResult | ResolveResult) -> str:
     title = escape(getattr(result, "title", "TeraBox file") or "TeraBox file")
-    file_type = _file_type(result) if isinstance(result, FileResult) else "video"
 
     details = (
         f"{BRAND}\n\n"
         "✅ <b>Link processed successfully</b>\n\n"
         f"📄 <b>Name:</b> {title}\n"
-        f"📁 <b>Type:</b> {_file_type_label(file_type)}\n"
     )
 
     size_formatted = getattr(result, "size_formatted", "")
@@ -182,17 +152,23 @@ def _result_details(result: FileResult | ResolveResult) -> str:
 
     if size_formatted:
         details += f"📦 <b>Size:</b> {escape(str(size_formatted))}\n"
-    if duration and file_type == "video":
+    if duration:
         details += f"⏱ <b>Duration:</b> {escape(str(duration))}\n"
-    if quality and file_type == "video":
+    if quality:
         details += f"🎞 <b>Quality:</b> {escape(str(quality))}\n"
 
-    details += f"\n🎯 <b>{'Ready to download' if file_type != 'video' else 'Choose an option below'}</b>"
+    details += "\n\n🎯 <b>Choose an option below</b>"
     return details
 
 
 def _is_document_result(result: FileResult) -> bool:
-    return _file_type(result) == "document"
+    """Detect common document types so PDFs can be sent as Telegram documents."""
+    title = (getattr(result, "title", "") or "").lower().strip()
+    document_exts = (
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx",
+        ".ppt", ".pptx", ".txt", ".csv",
+    )
+    return title.endswith(document_exts)
 
 
 async def _send_file_result(
@@ -200,61 +176,34 @@ async def _send_file_result(
     result: FileResult,
     original_url: str,
 ) -> None:
-    """Smart delivery while preserving the existing video result flow."""
+    """Render videos normally and send PDFs/documents directly when possible."""
     details = _result_details(result)
-    file_type = _file_type(result)
-    direct_url = result.download_url or result.playable_url
 
-    # Documents/PDFs: native Telegram document when a direct URL is available.
-    if file_type == "document" and direct_url:
+    # PDF/document support: when the resolver gives us a direct download URL,
+    # send the file itself instead of making the user open another button.
+    if _is_document_result(result) and result.download_url:
         try:
             await message.reply_document(
-                document=direct_url,
+                document=result.download_url,
                 caption=details,
                 parse_mode=ParseMode.HTML,
             )
             return
         except Exception:
+            # Fall back to the normal result UI if Telegram cannot fetch the URL.
             pass
 
-    # Audio: native Telegram audio when a direct URL is available.
-    if file_type == "audio" and direct_url:
-        try:
-            await message.reply_audio(
-                audio=direct_url,
-                caption=details,
-                parse_mode=ParseMode.HTML,
-                title=(getattr(result, "title", "") or "Audio")[:64],
-            )
-            return
-        except Exception:
-            pass
+    qualities = tuple(result.quality_urls.keys())
 
-    # Images: native photo delivery when possible.
-    if file_type == "image":
-        image_url = result.download_url or result.playable_url or result.thumbnail
-        if image_url:
-            try:
-                await message.reply_photo(
-                    photo=image_url,
-                    caption=details,
-                    parse_mode=ParseMode.HTML,
-                )
-                return
-            except Exception:
-                pass
-
-    # Existing video/result UI remains unchanged.
-    qualities = tuple(result.quality_urls.keys()) if file_type == "video" else ()
     markup = result_keyboard(
-        result.playable_url if file_type == "video" else None,
+        result.playable_url,
         result.download_url,
         original_url,
         quality_options=qualities,
     )
 
     thumbnail = result.thumbnail or ""
-    if thumbnail and file_type == "video":
+    if thumbnail:
         try:
             await message.reply_photo(
                 photo=thumbnail,

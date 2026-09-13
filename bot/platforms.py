@@ -7,6 +7,7 @@ SUPPORTED = {
         "terabox.app",
         "1024tera.com",
         "1024terabox.com",
+        "terasharefile.com",
     ),
     "diskwala": (
         "diskwala.com",
@@ -19,30 +20,37 @@ SUPPORTED = {
 
 def normalize_url(text: str) -> str:
     value = text.strip()
+
     if not value:
         return ""
+
     if not value.startswith(("http://", "https://")):
         value = "https://" + value
+
     return value
 
 
 def detect_platform(url: str) -> str | None:
     try:
         host = (urlparse(url).hostname or "").lower()
+
+        if host.startswith("www."):
+            host = host[4:]
+
+        for platform, domains in SUPPORTED.items():
+            for domain in domains:
+                if host == domain or host.endswith("." + domain):
+                    return platform
+
     except Exception:
         return None
 
-    host = host.removeprefix("www.")
-
-    for platform, domains in SUPPORTED.items():
-        if any(host == d or host.endswith("." + d) for d in domains):
-            return platform
     return None
 
 
 def is_url(text: str) -> bool:
     try:
-        parsed = urlparse(normalize_url(text))
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        parsed = urlparse(text.strip())
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
     except Exception:
         return False

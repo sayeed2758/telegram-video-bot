@@ -18,6 +18,10 @@ TERABOX_GATEWAY_URL = os.getenv("TERABOX_GATEWAY_URL", "").strip()
 # Optional owner-controlled proxy.
 TERABOX_PROXY_URL = os.getenv("TERABOX_PROXY_URL", "").strip()
 
+# Optional owner-controlled TBX Cloudflare proxy. If empty, the documented
+# public proxy is used for no-cookie metadata/stream fallback.
+TERABOX_TBX_PROXY_URL = os.getenv("TERABOX_TBX_PROXY_URL", "").strip()
+
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.

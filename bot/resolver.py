@@ -12,6 +12,7 @@ from bot.config import (
     TERABOX_NDUS,
     TERABOX_PROXY_URL,
     TERABOX_PUBLIC_GATEWAYS,
+    TERABOX_TBX_PROXY_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class ResolvedFile:
     size: str
     thumbnail: str | None = None
     direct_url: str | None = None
+    stream_url: str | None = None
 
 
 @dataclass
@@ -227,6 +229,54 @@ DEFAULT_PUBLIC_GATEWAYS = (
     "https://terabox-worker.robinkumarshakya103.workers.dev/api",
     "https://tera.pyann.me/api/tera",
 )
+
+
+DEFAULT_TBX_PROXY_URL = "https://tbx-proxy.shakir-ansarii075.workers.dev/"
+
+
+async def _tbx_proxy_resolve(
+    client: httpx.AsyncClient,
+    code: str,
+) -> ResolveResult:
+    """Try the documented TBX Cloudflare proxy without forwarding private cookies."""
+    proxy = (TERABOX_TBX_PROXY_URL or DEFAULT_TBX_PROXY_URL).rstrip("/") + "/"
+    try:
+        response = await client.get(
+            proxy,
+            params={"mode": "resolve", "surl": code, "refresh": "1", "raw": "1"},
+            headers=BROWSER_HEADERS,
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("TBX proxy request failed: %s", exc)
+        return ResolveResult(False, [], f"TBX proxy failed: {exc.__class__.__name__}")
+
+    logger.info("TBX proxy -> HTTP %s", response.status_code)
+    if response.status_code != 200:
+        return ResolveResult(False, [], f"TBX proxy returned HTTP {response.status_code}.")
+
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return ResolveResult(False, [], "TBX proxy returned invalid JSON.")
+
+    files = _parse_files(payload)
+    if not files and isinstance(payload, dict):
+        data = payload.get("data") or payload.get("upstream")
+        if isinstance(data, dict):
+            files = _parse_files(data)
+
+    if not files:
+        reason = payload.get("error") or payload.get("message") if isinstance(payload, dict) else None
+        return ResolveResult(False, [], str(reason or "TBX proxy returned no file metadata."))
+
+    # The proxy documents a stream mode that can produce an HLS playlist even
+    # when a raw TeraBox dlink would require private cookies.
+    stream_url = f"{proxy}?mode=stream&surl={code}"
+    for item in files:
+        if not item.stream_url:
+            item.stream_url = stream_url
+
+    return ResolveResult(True, files, f"Found {len(files)} file(s) through TBX proxy.")
 
 
 async def _public_gateway_resolve(
@@ -439,8 +489,13 @@ async def resolve_link(url: str) -> ResolveResult:
         if native_result.ok:
             return native_result
 
-        # 4. No-cookie fallback. This can succeed when TeraBox challenges
-        # the Render IP but a public gateway can resolve the same public share.
+        # 4. Documented no-cookie TBX proxy. Its stream mode can provide an
+        # HLS playback URL without exposing the user's private cookie.
+        tbx_result = await _tbx_proxy_resolve(client, code)
+        if tbx_result.ok:
+            return tbx_result
+
+        # 5. Other public no-cookie gateways.
         public_result = await _public_gateway_resolve(client, url)
         if public_result.ok:
             return public_result

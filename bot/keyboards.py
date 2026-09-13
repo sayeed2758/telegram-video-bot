@@ -29,7 +29,7 @@ def error_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def file_keyboard(direct_url: str | None) -> InlineKeyboardMarkup:
+def file_keyboard(direct_url: str | None, stream_url: str | None = None) -> InlineKeyboardMarkup:
     rows = []
 
     if direct_url:

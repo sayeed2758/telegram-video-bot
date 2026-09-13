@@ -126,12 +126,11 @@ async def process_url(
 
         # Phase 7 exposes a direct URL only when the resolver actually
         # returned one. No guessed or fabricated links are created.
-        first_direct_url = next(
-            (item.direct_url for item in result.files if item.direct_url),
-            None,
-        )
+        first_file = result.files[0] if result.files else None
+        first_direct_url = first_file.direct_url if first_file else None
+        first_stream_url = first_file.stream_url if first_file else None
 
-        if first_direct_url:
+        if first_direct_url or first_stream_url:
             lines.append("🎬 <b>Your file is ready.</b>")
             lines.append("Use the buttons below to open or download it.")
         else:
@@ -144,7 +143,7 @@ async def process_url(
         await status.edit_text(
             text,
             parse_mode="HTML",
-            reply_markup=file_keyboard(first_direct_url),
+            reply_markup=file_keyboard(first_direct_url, first_stream_url),
         )
         return
 

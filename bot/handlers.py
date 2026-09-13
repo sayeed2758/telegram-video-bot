@@ -153,9 +153,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "3️⃣ Wait while the link is processed.\n"
         "4️⃣ Use Play, Download, Quality or Copy Link.\n\n"
         "🕘 <b>History:</b> View your recent processed links anytime.\n"
-        "ℹ️ <b>Note:</b> Results depend on the configured resolver service.",
+        "ℹ️ <b>Note:</b> Results depend on the configured resolver service.\n\n"
+        "💬 <b>Need help?</b> Contact the bot owner directly.",
         parse_mode=ParseMode.HTML,
-        reply_markup=home_keyboard(),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Contact Me", url="https://t.me/Dragonn_Exclusive")],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")],
+        ]),
     )
 
 

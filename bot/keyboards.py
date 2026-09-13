@@ -1,4 +1,10 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram import (
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+)
 
 
 def home_keyboard() -> ReplyKeyboardMarkup:
@@ -15,15 +21,30 @@ def platform_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("All", callback_data="platform:all"),
-                InlineKeyboardButton("✅ TeraBox", callback_data="platform:terabox"),
+                InlineKeyboardButton(
+                    "All",
+                    callback_data="platform:all",
+                ),
+                InlineKeyboardButton(
+                    "✅ TeraBox",
+                    callback_data="platform:terabox",
+                ),
             ],
             [
-                InlineKeyboardButton("DiskWala", callback_data="platform:diskwala"),
-                InlineKeyboardButton("Flezen", callback_data="platform:flezen"),
+                InlineKeyboardButton(
+                    "DiskWala",
+                    callback_data="platform:diskwala",
+                ),
+                InlineKeyboardButton(
+                    "Flezen",
+                    callback_data="platform:flezen",
+                ),
             ],
             [
-                InlineKeyboardButton("🏠 Home", callback_data="home"),
+                InlineKeyboardButton(
+                    "🏠 Home",
+                    callback_data="home",
+                )
             ],
         ]
     )
@@ -34,6 +55,7 @@ def result_keyboard(
     download_url: str | None = None,
     original_url: str | None = None,
 ) -> InlineKeyboardMarkup:
+
     buttons = []
 
     if playable_url:
@@ -56,14 +78,16 @@ def result_keyboard(
             ]
         )
 
-    # Safe callback button. It does not send the long API URL to Telegram
-    # as a CopyTextButton, so it cannot trigger Button_copy_text_invalid.
-    if original_url:
+    # Copy the original TeraBox share link.
+    # It is short and safe for Telegram's CopyTextButton limit.
+    if original_url and len(original_url) <= 256:
         buttons.append(
             [
                 InlineKeyboardButton(
                     "📋  Copy Link",
-                    callback_data="copy_hint",
+                    copy_text=CopyTextButton(
+                        text=original_url,
+                    ),
                 )
             ]
         )

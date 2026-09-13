@@ -37,6 +37,20 @@ async def init_db() -> None:
         con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at)')
         con.execute(
             """
+            CREATE TABLE IF NOT EXISTS user_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                title TEXT NOT NULL,
+                original_url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        con.execute('CREATE INDEX IF NOT EXISTS idx_user_history_user ON user_history(user_id, id)')
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS rate_limit_state (
                 user_id INTEGER PRIMARY KEY,
                 day TEXT NOT NULL,
@@ -220,19 +234,6 @@ async def log_history(
     with _connect() as con:
         con.execute(
             """
-            CREATE TABLE IF NOT EXISTS user_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                platform TEXT NOT NULL,
-                title TEXT NOT NULL,
-                original_url TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """,
-        )
-        con.execute(
-            """
             INSERT INTO user_history
                 (user_id, platform, title, original_url, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -259,19 +260,6 @@ async def log_history(
 async def recent_history(user_id: int, limit: int = 10) -> list[dict]:
     limit = max(1, min(int(limit), 15))
     with _connect() as con:
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS user_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                platform TEXT NOT NULL,
-                title TEXT NOT NULL,
-                original_url TEXT NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """,
-        )
         rows = con.execute(
             """
             SELECT id, platform, title, original_url, status, created_at

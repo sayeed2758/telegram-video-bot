@@ -1,6 +1,6 @@
 from html import escape
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -19,6 +19,7 @@ from .database import (
     recent_requests,
     recent_users,
     recent_history,
+    log_history,
     request_stats,
     upsert_user,
 )
@@ -388,6 +389,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if update.effective_user:
         await log_request(update.effective_user.id, detected, "success")
+        # Store one history entry for the successfully processed share.
+        # The original public URL is kept so the user can reopen it later.
+        history_title = getattr(resolved.files[0], "title", "TeraBox file") or "TeraBox file"
+        await log_history(
+            update.effective_user.id,
+            detected,
+            history_title,
+            resolved.original_url or url,
+            "success",
+        )
 
     # Keep the whole result set available per user for compact callback data.
     context.user_data["last_resolution"] = resolved

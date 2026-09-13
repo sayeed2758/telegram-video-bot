@@ -281,14 +281,3 @@ async def recent_history(user_id: int, limit: int = 10) -> list[dict]:
         }
         for row in rows
     ]
-
-async def clear_history(user_id: int) -> int:
-    """Delete all saved history rows for one user and return the count removed."""
-    with _connect() as con:
-        cur = con.execute(
-            "DELETE FROM user_history WHERE user_id = ?",
-            (user_id,),
-        )
-        con.commit()
-        return int(cur.rowcount or 0)
-

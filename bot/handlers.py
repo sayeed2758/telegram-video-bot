@@ -14,7 +14,6 @@ from telegram.ext import (
 from .config import ADMIN_ID
 from .database import (
     check_and_record_request_limit,
-    clear_history,
     count_users,
     log_request,
     recent_requests,
@@ -31,8 +30,6 @@ from .keyboards import (
     quality_keyboard,
     result_keyboard,
     admin_keyboard,
-    history_actions_keyboard,
-    history_confirm_keyboard,
 )
 from .platforms import detect_platform, is_url, normalize_url
 from .resolver import FileResult, ResolveResult, resolve_link
@@ -193,8 +190,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             buttons + [
-                [InlineKeyboardButton("🗑  Clear History", callback_data="history:clear")],
-                [InlineKeyboardButton("🏠 Home", callback_data="home")],
+                [InlineKeyboardButton("🏠 Home", callback_data="home")]
             ]
         ),
     )
@@ -467,95 +463,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 await query.edit_message_reply_markup(reply_markup=None)
             await query.answer("Admin panel closed.")
             return
-
-    if data == "history:clear":
-        await query.edit_message_text(
-            "🗑 <b>Clear History</b>\n\n"
-            "Are you sure you want to delete your saved history?\n\n"
-            "⚠️ This cannot be undone.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=history_confirm_keyboard(),
-        )
-        await query.answer("Please confirm.")
-        return
-
-    if data == "history:cancel_clear":
-        await query.edit_message_text(
-            "🕘 <b>History</b>\n\n"
-            "Your history was not changed.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=history_actions_keyboard(),
-        )
-        await query.answer("Cancelled.")
-        return
-
-    if data == "history:confirm_clear":
-        user = update.effective_user
-        if not user:
-            await query.answer("Unable to identify your account.", show_alert=True)
-            return
-
-        removed = await clear_history(user.id)
-        if removed:
-            message = (
-                "🗑 <b>History cleared</b>\n\n"
-                f"✅ {removed} saved record(s) deleted.\n\n"
-                "Your future processed links will appear here again."
-            )
-        else:
-            message = "🕘 <b>History</b>\n\nYour history was already empty."
-
-        await query.edit_message_text(
-            message,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🕘 View History", callback_data="history:view")],
-                [InlineKeyboardButton("🏠 Home", callback_data="home")],
-            ]),
-        )
-        await query.answer("Done.")
-        return
-
-    if data == "history:view":
-        # Callback buttons cannot directly invoke a command handler.
-        # Recreate the history text using the same database source.
-        user = update.effective_user
-        if not user:
-            await query.answer("Unable to identify your account.", show_alert=True)
-            return
-
-        rows = await recent_history(user.id, 10)
-        if not rows:
-            await query.edit_message_text(
-                "🕘 <b>My History</b>\n\nNo processed links yet.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=history_actions_keyboard(),
-            )
-            await query.answer("History is empty.")
-            return
-
-        lines = ["🕘 <b>My History</b>", ""]
-        buttons = []
-        for index, row in enumerate(rows, 1):
-            platform = PLATFORM_LABELS.get(row["platform"], str(row["platform"]).title())
-            status = "✅" if row["status"] == "success" else "❌"
-            title = escape(row["title"] or "TeraBox file")
-            if len(title) > 70:
-                title = title[:67] + "..."
-            created = escape(row["created_at"].replace("T", " ")[:16])
-            lines.append(f"{index}. {status} <b>{title}</b>\n   {escape(platform)} • {created}")
-            if row["status"] == "success" and row["original_url"]:
-                buttons.append([InlineKeyboardButton(f"🔗 {index}. Open Link", url=row["original_url"])])
-
-        buttons.append([InlineKeyboardButton("🗑  Clear History", callback_data="history:clear")])
-        buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
-        await query.edit_message_text(
-            "\n".join(lines),
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        await query.answer("History refreshed.")
-        return
 
     if data == "home":
         context.user_data["selected_platform"] = "all"

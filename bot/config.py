@@ -8,12 +8,21 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram-webhook").strip("/")
 
-# Keep these private. Do not put them in GitHub or Telegram.
+# Optional private TeraBox session. Never put these in GitHub or Telegram.
 TERABOX_COOKIE = os.getenv("TERABOX_COOKIE", "").strip()
 TERABOX_NDUS = os.getenv("TERABOX_NDUS", "").strip()
 
-# Optional: your own trusted TeraBox gateway.
+# Optional owner-controlled gateway.
 TERABOX_GATEWAY_URL = os.getenv("TERABOX_GATEWAY_URL", "").strip()
 
-# Optional: an explicitly configured unified proxy.
+# Optional owner-controlled proxy.
 TERABOX_PROXY_URL = os.getenv("TERABOX_PROXY_URL", "").strip()
+
+# Optional comma-separated public gateway URLs. If empty, Phase 9 uses
+# two public gateway formats documented by their respective projects.
+# These are fallbacks only; the bot does not send cookies to them.
+TERABOX_PUBLIC_GATEWAYS = tuple(
+    item.strip().rstrip("/")
+    for item in os.getenv("TERABOX_PUBLIC_GATEWAYS", "").split(",")
+    if item.strip()
+)

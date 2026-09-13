@@ -153,8 +153,9 @@ async def process_url(
     if "verify" in reason.lower():
         text = (
             "🛡️ <b>TeraBox verification required.</b>\n\n"
-            "TeraBox is asking for a verified session for this share.\n\n"
-            "🔐 Add your valid TeraBox session in Render Environment Variables as ""<b>TERABOX_NDUS</b> (recommended) or <b>TERABOX_COOKIE</b>, then press 🔄 Retry.\n\n""⚠️ Never send your cookie/token in Telegram or GitHub."
+            "The direct resolver and no-cookie fallback could not resolve this share.\n\n"
+            "🔐 If this is a public share, press 🔄 Retry once. If it still fails, a valid TeraBox session may be required.\n\n"
+            "⚠️ Never send your cookie/token in Telegram or GitHub."
         )
     else:
         text = (

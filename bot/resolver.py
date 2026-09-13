@@ -6,7 +6,13 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from bot.config import TERABOX_COOKIE, TERABOX_GATEWAY_URL, TERABOX_NDUS, TERABOX_PROXY_URL
+from bot.config import (
+    TERABOX_COOKIE,
+    TERABOX_GATEWAY_URL,
+    TERABOX_NDUS,
+    TERABOX_PROXY_URL,
+    TERABOX_PUBLIC_GATEWAYS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +219,57 @@ async def _proxy_resolve(client: httpx.AsyncClient, code: str) -> ResolveResult:
     )
 
 
+
+# Public gateway fallbacks. These are not treated as authoritative; they are
+# simply additional resolution attempts when the direct TeraBox flow asks
+# for verification. No private cookies are sent to these endpoints.
+DEFAULT_PUBLIC_GATEWAYS = (
+    "https://terabox-worker.robinkumarshakya103.workers.dev/api",
+    "https://tera.pyann.me/api/tera",
+)
+
+
+async def _public_gateway_resolve(
+    client: httpx.AsyncClient,
+    share_url: str,
+) -> ResolveResult:
+    gateways = TERABOX_PUBLIC_GATEWAYS or DEFAULT_PUBLIC_GATEWAYS
+
+    for gateway in gateways:
+        try:
+            response = await client.get(
+                gateway,
+                params={"url": share_url},
+                headers=BROWSER_HEADERS,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("Public gateway %s failed: %s", gateway, exc.__class__.__name__)
+            continue
+
+        logger.info("Public gateway %s -> HTTP %s", gateway, response.status_code)
+
+        if response.status_code != 200:
+            continue
+
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError):
+            continue
+
+        files = _parse_files(payload)
+        if files:
+            return ResolveResult(True, files, f"Found {len(files)} file(s).")
+
+        if isinstance(payload, dict):
+            for key in ("data", "result", "response", "upstream"):
+                nested = payload.get(key)
+                if isinstance(nested, (dict, list)):
+                    files = _parse_files(nested)
+                    if files:
+                        return ResolveResult(True, files, f"Found {len(files)} file(s).")
+
+    return ResolveResult(False, [], "Public gateways did not return usable file metadata.")
+
 async def _gateway_resolve(
     client: httpx.AsyncClient,
     share_url: str,
@@ -382,12 +439,18 @@ async def resolve_link(url: str) -> ResolveResult:
         if native_result.ok:
             return native_result
 
+        # 4. No-cookie fallback. This can succeed when TeraBox challenges
+        # the Render IP but a public gateway can resolve the same public share.
+        public_result = await _public_gateway_resolve(client, url)
+        if public_result.ok:
+            return public_result
+
         reason = native_result.message
         if "need verify" in reason.lower() or "verify" in reason.lower():
             if not _cookie_header():
                 reason += (
-                    " Add a valid TeraBox session using TERABOX_NDUS or "
-                    "TERABOX_COOKIE in Render Environment Variables."
+                    " Public no-cookie gateways were also unable to resolve this share. "
+                    "A valid TeraBox session (TERABOX_NDUS or TERABOX_COOKIE) may be required."
                 )
 
         return ResolveResult(False, [], reason)

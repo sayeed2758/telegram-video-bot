@@ -148,3 +148,20 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("❌ Close", callback_data="admin:close")],
     ])
+
+
+def history_actions_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🗑  Clear History", callback_data="history:clear")],
+        [InlineKeyboardButton("🏠 Home", callback_data="home")],
+    ])
+
+
+def history_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Yes, Clear", callback_data="history:confirm_clear"),
+            InlineKeyboardButton("❌ Cancel", callback_data="history:cancel_clear"),
+        ]
+    ])
+

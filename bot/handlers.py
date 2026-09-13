@@ -13,6 +13,7 @@ from telegram.ext import (
 
 from .config import ADMIN_ID
 from .database import (
+    check_and_record_request_limit,
     count_users,
     log_request,
     recent_requests,
@@ -262,6 +263,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=home_keyboard(),
         )
         return
+
+    user = update.effective_user
+    if user and not await _is_admin(update):
+        allowed, retry_after, remaining_today = await check_and_record_request_limit(
+            user.id,
+            cooldown_seconds=10,
+            daily_limit=40,
+        )
+
+        if not allowed:
+            if retry_after > 0:
+                await update.message.reply_text(
+                    "⏳ <b>Please wait a moment.</b>\n\n"
+                    f"Try again in <b>{retry_after} seconds</b>.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=home_keyboard(),
+                )
+            else:
+                await update.message.reply_text(
+                    "🚦 <b>Daily request limit reached.</b>\n\n"
+                    "You have reached today's processing limit. "
+                    "Please try again tomorrow.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=home_keyboard(),
+                )
+            return
 
     processing = await update.message.reply_text(
         f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n\n"

@@ -35,6 +35,16 @@ async def init_db() -> None:
         con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_platform ON request_logs(platform)')
         con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at)')
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS rate_limit_state (
+                user_id INTEGER PRIMARY KEY,
+                day TEXT NOT NULL,
+                daily_count INTEGER NOT NULL DEFAULT 0,
+                last_request_at TEXT
+            )
+            """
+        )
         con.commit()
 
 
@@ -119,3 +129,80 @@ async def recent_users(limit: int = 10) -> list[dict]:
         }
         for user_id, username, first_name, joined_at, last_seen_at in rows
     ]
+
+async def check_and_record_request_limit(
+    user_id: int,
+    cooldown_seconds: int = 10,
+    daily_limit: int = 40,
+) -> tuple[bool, int, int]:
+    """Atomically enforce a per-user cooldown and UTC daily cap."""
+    cooldown_seconds = max(1, int(cooldown_seconds))
+    daily_limit = max(1, int(daily_limit))
+
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    today = now.date().isoformat()
+
+    with _connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+
+        row = con.execute(
+            'SELECT day, daily_count, last_request_at FROM rate_limit_state WHERE user_id = ?',
+            (user_id,),
+        ).fetchone()
+
+        if row is None:
+            day = today
+            daily_count = 0
+            last_request_at = None
+        else:
+            day, daily_count, last_request_at = row
+            daily_count = int(daily_count)
+            if day != today:
+                day = today
+                daily_count = 0
+                last_request_at = None
+
+        if daily_count >= daily_limit:
+            con.execute(
+                """
+                INSERT INTO rate_limit_state (user_id, day, daily_count, last_request_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    day = excluded.day,
+                    daily_count = excluded.daily_count,
+                    last_request_at = excluded.last_request_at
+                """,
+                (user_id, day, daily_count, last_request_at),
+            )
+            con.commit()
+            return False, 0, 0
+
+        if last_request_at:
+            try:
+                last_dt = datetime.fromisoformat(last_request_at)
+                elapsed = (now - last_dt).total_seconds()
+                remaining_wait = cooldown_seconds - int(elapsed)
+                if remaining_wait > 0:
+                    con.rollback()
+                    return False, remaining_wait, daily_limit - daily_count
+            except ValueError:
+                pass
+
+        daily_count += 1
+
+        con.execute(
+            """
+            INSERT INTO rate_limit_state (user_id, day, daily_count, last_request_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                day = excluded.day,
+                daily_count = excluded.daily_count,
+                last_request_at = excluded.last_request_at
+            """,
+            (user_id, day, daily_count, now_iso),
+        )
+        con.commit()
+
+    return True, 0, daily_limit - daily_count
+

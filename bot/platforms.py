@@ -2,9 +2,18 @@ from urllib.parse import urlparse
 
 
 SUPPORTED = {
-    "terabox": ("terabox.com", "terabox.app", "1024tera.com"),
-    "diskwala": ("diskwala.com",),
-    "flezen": ("flezen.com",),
+    "terabox": (
+        "terabox.com",
+        "terabox.app",
+        "1024tera.com",
+        "1024terabox.com",
+    ),
+    "diskwala": (
+        "diskwala.com",
+    ),
+    "flezen": (
+        "flezen.com",
+    ),
 }
 
 

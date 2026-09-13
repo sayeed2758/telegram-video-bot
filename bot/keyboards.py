@@ -53,6 +53,7 @@ def platform_keyboard() -> InlineKeyboardMarkup:
 def result_keyboard(
     playable_url: str | None,
     download_url: str | None = None,
+    original_url: str | None = None,
 ) -> InlineKeyboardMarkup:
 
     buttons = []
@@ -67,17 +68,6 @@ def result_keyboard(
             ]
         )
 
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "📋  Copy Play Link",
-                    copy_text=CopyTextButton(
-                        text=playable_url
-                    ),
-                )
-            ]
-        )
-
     if download_url:
         buttons.append(
             [
@@ -88,12 +78,15 @@ def result_keyboard(
             ]
         )
 
+    # Copy the original TeraBox share link.
+    # It is short and safe for Telegram's CopyTextButton limit.
+    if original_url and len(original_url) <= 256:
         buttons.append(
             [
                 InlineKeyboardButton(
-                    "📋  Copy Download Link",
+                    "📋  Copy Link",
                     copy_text=CopyTextButton(
-                        text=download_url
+                        text=original_url,
                     ),
                 )
             ]

@@ -28,18 +28,17 @@ def main() -> None:
             "RENDER_EXTERNAL_URL is missing. Set it to your Render service URL."
         )
 
-    port_raw = os.getenv("PORT", "10000").strip()
     try:
-        port = int(port_raw)
+        port = int(os.getenv("PORT", "10000").strip())
     except ValueError as exc:
-        raise RuntimeError(f"Invalid PORT value: {port_raw!r}") from exc
+        raise RuntimeError("PORT must be a valid integer.") from exc
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     register_handlers(application)
 
     webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
 
-    logger.info("Starting Advance Tera Video Bot...")
+    logger.info("Starting Advance Tera Video Bot.")
     logger.info("Webhook URL: %s", webhook_url)
     logger.info("Listening on 0.0.0.0:%s", port)
 

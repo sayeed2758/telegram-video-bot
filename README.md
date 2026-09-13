@@ -1,47 +1,44 @@
-# Tera Video Bot — Clean Rebuild
+# Advance Tera Video Bot — Phase 1
 
-## Render
-- Build: `pip install -r requirements.txt`
-- Start: `python main.py`
-- Root directory: blank
+Phase 1 contains only the basic professional `/start` welcome flow.
 
-## Required environment variables
-- `BOT_TOKEN` — required
-- `RENDER_EXTERNAL_URL` — automatically supplied by Render
-- `PORT` — automatically supplied by Render
+## Structure
 
-## Optional environment variables
-- `ADMIN_ID`
-- `DATABASE_PATH` (default: `bot.db`)
-- `WEBHOOK_PATH` (default: `telegram-webhook`)
-- `TERABOX_API_KEY` — optional primary resolver API key
-- `TERABOX_PUBLIC_WORKER_API` — optional override for public fallback
-- `TERABOX_GATEWAY_API` — optional override for gateway fallback
+```text
+telegram-video-bot/
+├── assets/
+│   └── welcome.jpg
+├── bot/
+│   ├── __init__.py
+│   └── handlers.py
+├── main.py
+├── requirements.txt
+└── README.md
+```
 
-## Resolver behavior
-For public TeraBox/TeraBox mirror shares the resolver tries, in order:
-1. Native public share page + `share/list`
-2. Configured PlayTeraBox API
-3. Public worker API
-4. Gateway API
+## Environment
 
-Only public/authorized shares are supported. Password-protected/private/captcha-gated shares are not bypassed.
+Create/set:
 
-SQLite is kept because it is already part of the project. On Render Free, local SQLite data can be lost when the instance is replaced.
+```text
+BOT_TOKEN=your_telegram_bot_token
+```
 
+## Run
 
-## TeraBox resolver configuration
+```bash
+pip install -r requirements.txt
+python main.py
+```
 
-The bot first uses the native public TeraBox share-page + `share/list` flow. Optional fallbacks are disabled unless explicitly configured.
+## Welcome image
 
-Optional Render environment variables:
+Put the funny meme image supplied by you at:
 
-- `TERABOX_API_KEY` — optional PlayTeraBox API key.
-- `TERABOX_COOKIE` — optional TeraBox cookie string if a public share requires session cookies.
-- `TERABOX_NDUS` — optional `ndus` cookie value; used as a convenience if you do not want to put it in `TERABOX_COOKIE`.
-- `TERABOX_RESOLVER_TIMEOUT` — default `15`.
-- `TERABOX_PAGE_TIMEOUT` — default `12`.
-- `TERABOX_PUBLIC_WORKER_API` — optional external worker fallback; disabled by default.
-- `TERABOX_GATEWAY_API` — optional external gateway fallback; disabled by default.
+```text
+assets/welcome.jpg
+```
 
-The resolver logs the TeraBox `errno`, response keys, and file count in Render logs. This makes a failed share diagnosable instead of silently falling through several dead endpoints.
+The `/start` command sends the image with the professional welcome caption.
+
+If the image is not present, the bot will still send the welcome text instead of crashing.

@@ -1,5 +1,4 @@
 from html import escape
-import asyncio
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -15,7 +14,6 @@ from telegram.ext import (
 from .config import ADMIN_ID
 from .database import (
     check_and_record_request_limit,
-    clear_history,
     count_users,
     log_request,
     recent_requests,
@@ -32,8 +30,6 @@ from .keyboards import (
     quality_keyboard,
     result_keyboard,
     admin_keyboard,
-    history_actions_keyboard,
-    history_confirm_keyboard,
 )
 from .platforms import detect_platform, is_url, normalize_url
 from .resolver import FileResult, ResolveResult, resolve_link
@@ -46,30 +42,11 @@ PLATFORM_LABELS = {
 }
 
 
-BRAND = "🎬 <b>Tera Video Bot</b>"
-BRAND_LINE = "✨ Fast • Clean • Simple"
-
-
-def _brand_block() -> str:
-    return f"{BRAND}\n<i>{BRAND_LINE}</i>"
-
-
-def _home_message(selected_platform: str = "all") -> str:
-    platform_text = "All platforms" if selected_platform == "all" else PLATFORM_LABELS.get(selected_platform, "All platforms")
-    return (
-        f"{_brand_block()}\n\n"
-        "🔗 <b>Send your public link</b> and I'll process it for you.\n\n"
-        f"🎯 <b>Selected:</b> {escape(platform_text)}\n"
-        "📦 <b>Supported:</b> TeraBox • DiskWala • Flezen"
-    )
-
-
 def _result_details(result: FileResult | ResolveResult) -> str:
     title = escape(getattr(result, "title", "TeraBox file") or "TeraBox file")
 
     details = (
-        f"{BRAND}\n\n"
-        "✅ <b>Link processed successfully</b>\n\n"
+        "🎬 <b>TeraBox Result</b>\n\n"
         f"📄 <b>Name:</b> {title}\n"
     )
 
@@ -84,7 +61,7 @@ def _result_details(result: FileResult | ResolveResult) -> str:
     if quality:
         details += f"🎞 <b>Quality:</b> {escape(str(quality))}\n"
 
-    details += "\n\n🎯 <b>Choose an option below</b>"
+    details += "\n✅ <b>Ready to play</b>\nChoose an option below:"
     return details
 
 
@@ -135,8 +112,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["selected_platform"] = "all"
 
     await update.message.reply_text(
-        f"{_home_message() }\n\n"
-        "💡 <i>Tip: use 🎯 Select Platform when you want to lock the detector to one service.</i>",
+        "👋 <b>Welcome to Tera Video Bot</b>\n\n"
+        "🔗 Send a supported public link and I'll process it for you.\n\n"
+        "Supported: <b>TeraBox</b> • <b>DiskWala</b> • <b>Flezen</b>\n\n"
+        "🎯 You can select a platform first.",
         parse_mode=ParseMode.HTML,
         reply_markup=home_keyboard(),
     )
@@ -146,14 +125,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _touch_user(update)
 
     await update.message.reply_text(
-        f"{BRAND}\n\n"
         "📖 <b>How to use</b>\n\n"
-        "1️⃣ Select a platform or keep All selected.\n"
-        "2️⃣ Send your public/authorized link.\n"
-        "3️⃣ Wait while the link is processed.\n"
-        "4️⃣ Use Play, Download, Quality or Copy Link.\n\n"
-        "🕘 <b>History:</b> View your recent processed links anytime.\n"
-        "ℹ️ <b>Note:</b> Results depend on the configured resolver service.",
+        "1️⃣ Select a platform or choose All.\n"
+        "2️⃣ Send a public/authorized link.\n"
+        "3️⃣ The bot detects the platform.\n"
+        "4️⃣ Available files and links will be shown.\n\n"
+        "ℹ️ Resolver integrations use configured API services.",
         parse_mode=ParseMode.HTML,
         reply_markup=home_keyboard(),
     )
@@ -213,8 +190,7 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(
             buttons + [
-                [InlineKeyboardButton("🗑  Clear History", callback_data="history:clear")],
-                [InlineKeyboardButton("🏠 Home", callback_data="home")],
+                [InlineKeyboardButton("🏠 Home", callback_data="home")]
             ]
         ),
     )
@@ -310,7 +286,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if text == "🎯 Select Platform":
         await update.message.reply_text(
-            f"{BRAND}\n\n🎯 <b>Select Platform</b>",
+            "🎯 <b>Select Platform</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=platform_keyboard(),
         )
@@ -326,7 +302,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not is_url(text):
         await update.message.reply_text(
-            f"{BRAND}\n\n🔗 <b>Invalid link</b>\n\nPlease send a valid http/https link.",
+            "🔗 <b>Invalid link</b>\n\nPlease send a valid http/https link.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
         )
@@ -338,7 +314,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if not detected:
         await update.message.reply_text(
-            f"{BRAND}\n\n⚠️ <b>Unsupported platform</b>\n\n"
+            "⚠️ <b>Unsupported platform</b>\n\n"
             "I currently recognize <b>TeraBox</b>, <b>DiskWala</b> and <b>Flezen</b> links.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
@@ -347,7 +323,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     if selected != "all" and selected != detected:
         await update.message.reply_text(
-            f"{BRAND}\n\n⚠️ You selected <b>{PLATFORM_LABELS[selected]}</b>, "
+            f"⚠️ You selected <b>{PLATFORM_LABELS[selected]}</b>, "
             f"but this link is from <b>{PLATFORM_LABELS[detected]}</b>.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
@@ -381,23 +357,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
     processing = await update.message.reply_text(
-        f"{BRAND}\n\n"
-        f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n"
-        "⏳ <b>Processing your link...</b>\n\n"
-        "Please wait a moment.",
+        f"🔎 <b>{PLATFORM_LABELS[detected]}</b> link detected.\n\n"
+        "⏳ Processing your link...",
         parse_mode=ParseMode.HTML,
     )
-
-    await asyncio.sleep(0.35)
-    try:
-        await processing.edit_text(
-            f"{BRAND}\n\n"
-            f"🔎 <b>{PLATFORM_LABELS[detected]}</b> detected.\n"
-            "⚙️ <b>Fetching available result...</b>",
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception:
-        pass
 
     try:
         resolved = await resolve_link(url, detected)
@@ -405,7 +368,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if update.effective_user:
             await log_request(update.effective_user.id, detected, "failed")
         await processing.edit_text(
-            f"{BRAND}\n\n❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
+            "❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
         )
@@ -416,7 +379,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await log_request(update.effective_user.id, detected, "failed")
         error_note = resolved.note or "No playable link was returned."
         await processing.edit_text(
-            f"{BRAND}\n\n⚠️ <b>Unable to process this link</b>\n\n"
+            "⚠️ <b>Unable to process this link</b>\n\n"
             f"{escape(error_note)}\n\n"
             "Please try another public/authorized link.",
             parse_mode=ParseMode.HTML,
@@ -444,7 +407,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if len(resolved.files) > 1:
         count = len(resolved.files)
         message = (
-            f"{BRAND}\n\n"
             "📁 <b>Multiple Files Found</b>\n\n"
             f"✅ {count} files are available.\n"
             "Select the file you want to open:"
@@ -502,116 +464,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             await query.answer("Admin panel closed.")
             return
 
-    if data == "history:clear":
-        await query.edit_message_text(
-            "🗑 <b>Clear History</b>\n\n"
-            "Are you sure you want to delete your saved history?\n\n"
-            "⚠️ This cannot be undone.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=history_confirm_keyboard(),
-        )
-        await query.answer("Please confirm.")
-        return
-
-    if data == "history:cancel_clear":
-        await query.edit_message_text(
-            "🕘 <b>History</b>\n\n"
-            "Your history was not changed.",
-            parse_mode=ParseMode.HTML,
-            reply_markup=history_actions_keyboard(),
-        )
-        await query.answer("Cancelled.")
-        return
-
-    if data == "history:confirm_clear":
-        user = update.effective_user
-        if not user:
-            await query.answer("Unable to identify your account.", show_alert=True)
-            return
-
-        removed = await clear_history(user.id)
-        if removed:
-            message = (
-                "🗑 <b>History cleared</b>\n\n"
-                f"✅ {removed} saved record(s) deleted.\n\n"
-                "Your future processed links will appear here again."
-            )
-        else:
-            message = "🕘 <b>History</b>\n\nYour history was already empty."
-
-        await query.edit_message_text(
-            message,
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🕘 View History", callback_data="history:view")],
-                [InlineKeyboardButton("🏠 Home", callback_data="home")],
-            ]),
-        )
-        await query.answer("Done.")
-        return
-
-    if data == "history:view":
-        # Callback buttons cannot directly invoke a command handler.
-        # Recreate the history text using the same database source.
-        user = update.effective_user
-        if not user:
-            await query.answer("Unable to identify your account.", show_alert=True)
-            return
-
-        rows = await recent_history(user.id, 10)
-        if not rows:
-            await query.edit_message_text(
-                "🕘 <b>My History</b>\n\nNo processed links yet.",
-                parse_mode=ParseMode.HTML,
-                reply_markup=history_actions_keyboard(),
-            )
-            await query.answer("History is empty.")
-            return
-
-        lines = ["🕘 <b>My History</b>", ""]
-        buttons = []
-        for index, row in enumerate(rows, 1):
-            platform = PLATFORM_LABELS.get(row["platform"], str(row["platform"]).title())
-            status = "✅" if row["status"] == "success" else "❌"
-            title = escape(row["title"] or "TeraBox file")
-            if len(title) > 70:
-                title = title[:67] + "..."
-            created = escape(row["created_at"].replace("T", " ")[:16])
-            lines.append(f"{index}. {status} <b>{title}</b>\n   {escape(platform)} • {created}")
-            if row["status"] == "success" and row["original_url"]:
-                buttons.append([InlineKeyboardButton(f"🔗 {index}. Open Link", url=row["original_url"])])
-
-        buttons.append([InlineKeyboardButton("🗑  Clear History", callback_data="history:clear")])
-        buttons.append([InlineKeyboardButton("🏠 Home", callback_data="home")])
-        await query.edit_message_text(
-            "\n".join(lines),
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(buttons),
-        )
-        await query.answer("History refreshed.")
-        return
-
     if data == "home":
         context.user_data["selected_platform"] = "all"
-        try:
-            await query.edit_message_text(
-                _home_message(),
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🎯 Select Platform", callback_data="select_platform")]
-                ]),
-            )
-        except Exception:
-            await query.message.reply_text(
-                _home_message(),
-                parse_mode=ParseMode.HTML,
-                reply_markup=home_keyboard(),
-            )
+        await query.message.reply_text(
+            "🏠 <b>Home</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=home_keyboard(),
+        )
         return
 
     if data == "select_platform":
         await query.message.reply_text(
-            f"{BRAND}\n\n🎯 <b>Select Platform</b>",
+            "🎯 <b>Select Platform</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=platform_keyboard(),
         )
@@ -735,14 +599,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         context.user_data["selected_platform"] = platform
 
         if platform == "all":
-            message = (
-                f"{BRAND}\n\n"
-                "✅ <b>All platforms selected.</b>\n\n"
-                "Send a supported public link."
-            )
+            message = "✅ <b>All platforms selected.</b>\n\nSend a supported public link."
         else:
             message = (
-                f"{BRAND}\n\n"
                 f"✅ <b>{PLATFORM_LABELS[platform]}</b> selected.\n\n"
                 "Send its public link."
             )

@@ -132,3 +132,18 @@ def file_selection_keyboard(
     ])
 
     return InlineKeyboardMarkup(rows)
+
+
+
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📊 Dashboard", callback_data="admin:stats"),
+            InlineKeyboardButton("👥 Users", callback_data="admin:users"),
+        ],
+        [
+            InlineKeyboardButton("🧾 Recent Requests", callback_data="admin:requests"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="admin:refresh"),
+        ],
+        [InlineKeyboardButton("❌ Close", callback_data="admin:close")],
+    ])

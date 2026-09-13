@@ -32,15 +32,9 @@ async def init_db() -> None:
             )
             '''
         )
-        con.execute(
-            'CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status)'
-        )
-        con.execute(
-            'CREATE INDEX IF NOT EXISTS idx_request_logs_platform ON request_logs(platform)'
-        )
-        con.execute(
-            'CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at)'
-        )
+        con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_platform ON request_logs(platform)')
+        con.execute('CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at)')
         con.commit()
 
 
@@ -85,7 +79,6 @@ async def request_stats() -> dict[str, int]:
         terabox = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'terabox'").fetchone()[0]
         diskwala = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'diskwala'").fetchone()[0]
         flezen = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'flezen'").fetchone()[0]
-
     return {
         'total': int(total),
         'success': int(success),
@@ -94,3 +87,35 @@ async def request_stats() -> dict[str, int]:
         'diskwala': int(diskwala),
         'flezen': int(flezen),
     }
+
+
+async def recent_requests(limit: int = 10) -> list[dict]:
+    limit = max(1, min(int(limit), 25))
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT user_id, platform, status, created_at FROM request_logs ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {'user_id': int(user_id), 'platform': platform, 'status': status, 'created_at': created_at}
+        for user_id, platform, status, created_at in rows
+    ]
+
+
+async def recent_users(limit: int = 10) -> list[dict]:
+    limit = max(1, min(int(limit), 25))
+    with _connect() as con:
+        rows = con.execute(
+            "SELECT user_id, username, first_name, joined_at, last_seen_at FROM users ORDER BY last_seen_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [
+        {
+            'user_id': int(user_id),
+            'username': username or '',
+            'first_name': first_name or '',
+            'joined_at': joined_at,
+            'last_seen_at': last_seen_at,
+        }
+        for user_id, username, first_name, joined_at, last_seen_at in rows
+    ]

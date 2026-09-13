@@ -12,13 +12,21 @@ from telegram.ext import (
 )
 
 from .config import ADMIN_ID
-from .database import count_users, log_request, request_stats, upsert_user
+from .database import (
+    count_users,
+    log_request,
+    recent_requests,
+    recent_users,
+    request_stats,
+    upsert_user,
+)
 from .keyboards import (
     file_selection_keyboard,
     home_keyboard,
     platform_keyboard,
     quality_keyboard,
     result_keyboard,
+    admin_keyboard,
 )
 from .platforms import detect_platform, is_url, normalize_url
 from .resolver import FileResult, ResolveResult, resolve_link
@@ -125,20 +133,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _touch_user(update)
+async def _is_admin(update: Update) -> bool:
+    user = update.effective_user
+    return bool(ADMIN_ID and user and user.id == ADMIN_ID)
 
-    if not ADMIN_ID or update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("⛔ Admin only.")
-        return
 
-    stats = await request_stats()
-
+def _stats_text(stats: dict[str, int], users: int) -> str:
     success_rate = round(stats["success"] * 100 / stats["total"], 1) if stats["total"] else 0
-
-    message = (
+    return (
         "📊 <b>Admin Dashboard</b>\n\n"
-        f"👥 <b>Users:</b> {await count_users()}\n"
+        f"👥 <b>Users:</b> {users}\n"
         f"🔗 <b>Total requests:</b> {stats['total']}\n"
         f"✅ <b>Successful:</b> {stats['success']}\n"
         f"❌ <b>Failed:</b> {stats['failed']}\n"
@@ -149,9 +153,67 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"• Flezen: {stats['flezen']}"
     )
 
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _touch_user(update)
+    if not await _is_admin(update):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    stats = await request_stats()
+    users = await count_users()
     await update.message.reply_text(
-        message,
+        _stats_text(stats, users),
         parse_mode=ParseMode.HTML,
+        reply_markup=admin_keyboard(),
+    )
+
+
+async def _send_admin_stats_message(message) -> None:
+    stats = await request_stats()
+    users = await count_users()
+    await message.edit_text(
+        _stats_text(stats, users),
+        parse_mode=ParseMode.HTML,
+        reply_markup=admin_keyboard(),
+    )
+
+
+async def _admin_users_text() -> str:
+    users = await recent_users(10)
+    if not users:
+        return "👥 <b>Recent Users</b>\n\nNo users recorded yet."
+    lines = ["👥 <b>Recent Users</b>", ""]
+    for i, user in enumerate(users, 1):
+        name = escape(user['first_name'] or "Unknown")
+        username = escape(user['username']) if user['username'] else "—"
+        lines.append(f"{i}. <b>{name}</b>\n   @{username}\n   ID: <code>{user['user_id']}</code>")
+    return "\n".join(lines)
+
+
+async def _admin_requests_text() -> str:
+    rows = await recent_requests(10)
+    if not rows:
+        return "🧾 <b>Recent Requests</b>\n\nNo requests recorded yet."
+    lines = ["🧾 <b>Recent Requests</b>", ""]
+    for row in rows:
+        platform = PLATFORM_LABELS.get(row['platform'], row['platform'].title())
+        status = "✅" if row['status'] == "success" else "❌"
+        created = row['created_at'].replace("T", " ")[:19]
+        lines.append(f"{status} <b>{escape(platform)}</b> • <code>{row['user_id']}</code> • {escape(created)}")
+    return "\n".join(lines)
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _touch_user(update)
+    if not await _is_admin(update):
+        await update.message.reply_text("⛔ Admin only.")
+        return
+    stats = await request_stats()
+    users = await count_users()
+    await update.message.reply_text(
+        _stats_text(stats, users),
+        parse_mode=ParseMode.HTML,
+        reply_markup=admin_keyboard(),
     )
 
 
@@ -210,6 +272,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         resolved = await resolve_link(url, detected)
     except Exception:
+        if update.effective_user:
+            await log_request(update.effective_user.id, detected, "failed")
         await processing.edit_text(
             "❌ <b>Processing failed</b>\n\nPlease try another public/authorized link.",
             parse_mode=ParseMode.HTML,
@@ -218,6 +282,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     if not resolved.files:
+        if update.effective_user:
+            await log_request(update.effective_user.id, detected, "failed")
         error_note = resolved.note or "No playable link was returned."
         await processing.edit_text(
             "⚠️ <b>Unable to process this link</b>\n\n"
@@ -227,6 +293,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             reply_markup=home_keyboard(),
         )
         return
+
+    if update.effective_user:
+        await log_request(update.effective_user.id, detected, "success")
 
     # Keep the whole result set available per user for compact callback data.
     context.user_data["last_resolution"] = resolved
@@ -257,6 +326,40 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await query.answer()
 
     data = query.data or ""
+
+    if data.startswith("admin:"):
+        if not await _is_admin(update):
+            await query.answer("Admin only.", show_alert=True)
+            return
+
+        action = data.split(":", 1)[1]
+        if action in {"stats", "refresh"}:
+            await _send_admin_stats_message(query.message)
+            await query.answer("Dashboard refreshed.")
+            return
+        if action == "users":
+            await query.edit_message_text(
+                await _admin_users_text(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=admin_keyboard(),
+            )
+            await query.answer("Recent users")
+            return
+        if action == "requests":
+            await query.edit_message_text(
+                await _admin_requests_text(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=admin_keyboard(),
+            )
+            await query.answer("Recent requests")
+            return
+        if action == "close":
+            try:
+                await query.message.delete()
+            except Exception:
+                await query.edit_message_reply_markup(reply_markup=None)
+            await query.answer("Admin panel closed.")
+            return
 
     if data == "home":
         context.user_data["selected_platform"] = "all"
@@ -411,6 +514,7 @@ def register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

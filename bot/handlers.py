@@ -1,3 +1,5 @@
+from html import escape
+
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -40,6 +42,41 @@ async def _touch_user(update: Update) -> None:
             user.username,
             user.first_name,
         )
+
+
+def _result_details(result) -> str:
+    """Build safe HTML result text."""
+    title = escape(result.title or "TeraBox file")
+
+    details = (
+        "🎬 <b>TeraBox Result</b>\n\n"
+        f"📄 <b>Name:</b> {title}\n"
+    )
+
+    if result.size_formatted:
+        details += (
+            f"📦 <b>Size:</b> "
+            f"{escape(str(result.size_formatted))}\n"
+        )
+
+    if result.duration:
+        details += (
+            f"⏱ <b>Duration:</b> "
+            f"{escape(str(result.duration))}\n"
+        )
+
+    if result.quality:
+        details += (
+            f"🎞 <b>Quality:</b> "
+            f"{escape(str(result.quality))}\n"
+        )
+
+    details += (
+        "\n✅ <b>Ready to play</b>\n"
+        "Choose an option below:"
+    )
+
+    return details
 
 
 async def start(
@@ -183,7 +220,6 @@ async def text_handler(
             url,
             detected,
         )
-
     except Exception:
         await processing.edit_text(
             "❌ <b>Processing failed</b>\n\n"
@@ -194,55 +230,46 @@ async def text_handler(
         return
 
     if result.playable_url:
+        details = _result_details(result)
 
-        details = (
-            "🎬 <b>TeraBox Result</b>\n\n"
-            f"📄 <b>Name:</b> "
-            f"{result.title}\n"
+        markup = result_keyboard(
+            result.playable_url,
+            result.download_url,
+            result.original_url,
         )
 
-        if result.size_formatted:
-            details += (
-                f"📦 <b>Size:</b> "
-                f"{result.size_formatted}\n"
-            )
+        # Phase 4A: show thumbnail when available.
+        # Safe fallback keeps the existing text result working
+        # if Telegram cannot fetch the remote thumbnail.
+        thumbnail = getattr(result, "thumbnail", "") or ""
 
-        if result.duration:
-            details += (
-                f"⏱ <b>Duration:</b> "
-                f"{result.duration}\n"
-            )
-
-        if result.quality:
-            details += (
-                f"🎞 <b>Quality:</b> "
-                f"{result.quality}\n"
-            )
-
-        details += (
-            "\n✅ <b>Ready to play</b>\n"
-            "Choose an option below:"
-        )
+        if thumbnail:
+            try:
+                await update.effective_message.reply_photo(
+                    photo=thumbnail,
+                    caption=details,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=markup,
+                )
+                await processing.delete()
+                return
+            except Exception:
+                pass
 
         await processing.edit_text(
-    details,
-    parse_mode=ParseMode.HTML,
-    reply_markup=result_keyboard(
-        result.playable_url,
-        result.download_url,
-        result.original_url,
-    ),
+            details,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
         )
 
     else:
-
         error_note = result.note or (
             "No playable link was returned."
         )
 
         await processing.edit_text(
             "⚠️ <b>Unable to process this link</b>\n\n"
-            f"{error_note}\n\n"
+            f"{escape(error_note)}\n\n"
             "Please try another public/authorized link.",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
@@ -259,58 +286,41 @@ async def callback_handler(
     await query.answer()
 
     if query.data == "home":
-
-        context.user_data[
-            "selected_platform"
-        ] = "all"
+        context.user_data["selected_platform"] = "all"
 
         await query.message.reply_text(
             "🏠 <b>Home</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=home_keyboard(),
         )
-
         return
 
     if query.data == "select_platform":
-
         await query.message.reply_text(
             "🎯 <b>Select Platform</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=platform_keyboard(),
         )
-
         return
 
     if query.data == "copy_hint":
-
         await query.answer(
             "Use the Copy button shown with the link.",
             show_alert=True,
         )
-
         return
 
     if query.data.startswith("platform:"):
+        platform = query.data.split(":", 1)[1]
 
-        platform = query.data.split(
-            ":",
-            1,
-        )[1]
-
-        context.user_data[
-            "selected_platform"
-        ] = platform
+        context.user_data["selected_platform"] = platform
 
         if platform == "all":
-
             message = (
                 "✅ <b>All platforms selected.</b>\n\n"
                 "Send a supported public link."
             )
-
         else:
-
             message = (
                 f"✅ <b>{PLATFORM_LABELS[platform]}</b> "
                 "selected.\n\n"
@@ -324,26 +334,11 @@ async def callback_handler(
         )
 
 
-def register_handlers(
-    app: Application,
-) -> None:
-
-    app.add_handler(
-        CommandHandler("start", start)
-    )
-
-    app.add_handler(
-        CommandHandler("help", help_command)
-    )
-
-    app.add_handler(
-        CommandHandler("stats", stats)
-    )
-
-    app.add_handler(
-        CallbackQueryHandler(callback_handler)
-    )
-
+def register_handlers(app: Application) -> None:
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CallbackQueryHandler(callback_handler))
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,

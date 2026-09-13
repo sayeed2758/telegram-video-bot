@@ -1,4 +1,5 @@
 from telegram import Update
+from telegram.helpers import escape
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -195,10 +196,12 @@ async def text_handler(
 
     if result.playable_url:
 
+        safe_title = escape(result.title or "TeraBox file")
+
         details = (
             "🎬 <b>TeraBox Result</b>\n\n"
             f"📄 <b>Name:</b> "
-            f"{result.title}\n"
+            f"{safe_title}\n"
         )
 
         if result.size_formatted:
@@ -224,15 +227,35 @@ async def text_handler(
             "Choose an option below:"
         )
 
-        await processing.edit_text(
-    details,
-    parse_mode=ParseMode.HTML,
-    reply_markup=result_keyboard(
-        result.playable_url,
-        result.download_url,
-        result.original_url,
-    ),
+        keyboard = result_keyboard(
+            result.playable_url,
+            result.download_url,
+            result.original_url,
         )
+
+        # Phase 4A-1: show the API thumbnail when available.
+        # If Telegram cannot fetch it, keep the existing text-result fallback.
+        if result.thumbnail:
+            try:
+                await update.message.reply_photo(
+                    photo=result.thumbnail,
+                    caption=details,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+                await processing.delete()
+            except Exception:
+                await processing.edit_text(
+                    details,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=keyboard,
+                )
+        else:
+            await processing.edit_text(
+                details,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
+            )
 
     else:
 

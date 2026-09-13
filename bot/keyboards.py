@@ -21,31 +21,14 @@ def platform_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton(
-                    "All",
-                    callback_data="platform:all",
-                ),
-                InlineKeyboardButton(
-                    "✅ TeraBox",
-                    callback_data="platform:terabox",
-                ),
+                InlineKeyboardButton("All", callback_data="platform:all"),
+                InlineKeyboardButton("✅ TeraBox", callback_data="platform:terabox"),
             ],
             [
-                InlineKeyboardButton(
-                    "DiskWala",
-                    callback_data="platform:diskwala",
-                ),
-                InlineKeyboardButton(
-                    "Flezen",
-                    callback_data="platform:flezen",
-                ),
+                InlineKeyboardButton("DiskWala", callback_data="platform:diskwala"),
+                InlineKeyboardButton("Flezen", callback_data="platform:flezen"),
             ],
-            [
-                InlineKeyboardButton(
-                    "🏠 Home",
-                    callback_data="home",
-                )
-            ],
+            [InlineKeyboardButton("🏠 Home", callback_data="home")],
         ]
     )
 
@@ -59,60 +42,36 @@ def result_keyboard(
     buttons = []
 
     if playable_url:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "▶️  Play Online",
-                    url=playable_url,
-                )
-            ]
-        )
+        buttons.append([
+            InlineKeyboardButton("▶️  Play Online", url=playable_url)
+        ])
 
     if download_url:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "⬇️  Download",
-                    url=download_url,
-                )
-            ]
-        )
+        buttons.append([
+            InlineKeyboardButton("⬇️  Download", url=download_url)
+        ])
 
     if quality_options:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "🎞  Change Quality",
-                    callback_data="quality:menu",
-                )
-            ]
-        )
+        buttons.append([
+            InlineKeyboardButton("🎞  Change Quality", callback_data="quality:menu")
+        ])
 
-    # Copy the original TeraBox share link only.
     if original_url and len(original_url) <= 256:
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    "📋  Copy Link",
-                    copy_text=CopyTextButton(text=original_url),
-                )
-            ]
-        )
-
-    buttons.append(
-        [
+        buttons.append([
             InlineKeyboardButton(
-                "🎯  Select Platform",
-                callback_data="select_platform",
+                "📋  Copy Link",
+                copy_text=CopyTextButton(text=original_url),
             )
-        ]
-    )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("🎯  Select Platform", callback_data="select_platform")
+    ])
 
     return InlineKeyboardMarkup(buttons)
 
 
 def quality_keyboard(qualities: tuple[str, ...]) -> InlineKeyboardMarkup:
-    """Build a compact quality selector with callback-only buttons."""
     preferred = ("1080p", "720p", "480p", "360p")
     ordered = [q for q in preferred if q in qualities]
     ordered += [q for q in qualities if q not in ordered]
@@ -134,13 +93,42 @@ def quality_keyboard(qualities: tuple[str, ...]) -> InlineKeyboardMarkup:
     if current_row:
         rows.append(current_row)
 
-    rows.append(
-        [
+    rows.append([
+        InlineKeyboardButton("↩️ Back", callback_data="quality:back")
+    ])
+
+    return InlineKeyboardMarkup(rows)
+
+
+def file_selection_keyboard(
+    files: tuple,
+    max_files: int = 25,
+) -> InlineKeyboardMarkup:
+    """Compact callback-only menu for multi-file shares."""
+    rows = []
+
+    for index, file_result in enumerate(files[:max_files]):
+        name = str(getattr(file_result, "title", "TeraBox file") or "TeraBox file")
+        if len(name) > 36:
+            name = name[:33] + "..."
+
+        rows.append([
             InlineKeyboardButton(
-                "↩️ Back",
-                callback_data="quality:back",
+                f"{index + 1}. {name}",
+                callback_data=f"file:{index}",
             )
-        ]
-    )
+        ])
+
+    if len(files) > max_files:
+        rows.append([
+            InlineKeyboardButton(
+                f"ℹ️ Showing first {max_files} files",
+                callback_data="noop",
+            )
+        ])
+
+    rows.append([
+        InlineKeyboardButton("↩️ Back", callback_data="files:back")
+    ])
 
     return InlineKeyboardMarkup(rows)

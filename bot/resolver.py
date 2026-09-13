@@ -6,11 +6,10 @@ import httpx
 
 
 @dataclass
-class ResolveResult:
-    platform: str
-    original_url: str
+class FileResult:
+    """One file returned by the TeraBox API."""
 
-    title: str = ""
+    title: str = "TeraBox file"
     playable_url: str | None = None
     download_url: str | None = None
 
@@ -19,8 +18,27 @@ class ResolveResult:
     quality: str = ""
     thumbnail: str = ""
 
-    # Available quality -> stream URL mapping returned by the API.
+    # Available quality -> stream URL mapping.
     quality_urls: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ResolveResult:
+    platform: str
+    original_url: str
+
+    # Backward-compatible first-file fields.
+    title: str = ""
+    playable_url: str | None = None
+    download_url: str | None = None
+    size_formatted: str = ""
+    duration: str = ""
+    quality: str = ""
+    thumbnail: str = ""
+    quality_urls: dict[str, str] = field(default_factory=dict)
+
+    # Phase 4C: all files returned by the API.
+    files: list[FileResult] = field(default_factory=list)
 
     note: str = ""
 
@@ -34,7 +52,6 @@ def _valid_url(value) -> str | None:
         return None
 
     value = value.strip()
-
     if not value:
         return None
 
@@ -50,14 +67,9 @@ def _valid_url(value) -> str | None:
 
 def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, str]]:
     """Extract playable/download URLs and all supported stream qualities."""
-    playable_url = None
-    download_url = None
+    playable_url = _valid_url(file_data.get("stream_url"))
     quality_urls: dict[str, str] = {}
 
-    # Preferred direct stream URL.
-    playable_url = _valid_url(file_data.get("stream_url"))
-
-    # Collect all quality-specific stream URLs when available.
     fast_stream = file_data.get("fast_stream_url")
     if isinstance(fast_stream, dict):
         for quality, candidate in fast_stream.items():
@@ -67,7 +79,6 @@ def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, st
                 if quality_name:
                     quality_urls[quality_name] = candidate_url
 
-    # If direct stream_url is unavailable, choose the highest common quality.
     if not playable_url:
         for quality in ("1080p", "720p", "480p", "360p"):
             candidate = quality_urls.get(quality)
@@ -75,7 +86,6 @@ def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, st
                 playable_url = candidate
                 break
 
-    # Download URL.
     download_url = _valid_url(file_data.get("fast_download_link"))
     if not download_url:
         download_url = _valid_url(file_data.get("download_link"))
@@ -83,16 +93,58 @@ def _extract_urls(file_data: dict) -> tuple[str | None, str | None, dict[str, st
     return playable_url, download_url, quality_urls
 
 
+def _parse_file(file_data: dict) -> FileResult | None:
+    if not isinstance(file_data, dict):
+        return None
+
+    title = file_data.get("name")
+    if not isinstance(title, str) or not title.strip():
+        title = "TeraBox file"
+
+    playable_url, download_url, quality_urls = _extract_urls(file_data)
+
+    size_formatted = str(file_data.get("size_formatted") or "")
+    duration = str(file_data.get("duration") or "")
+
+    quality = file_data.get("quality") or ""
+    if isinstance(quality, (list, dict)):
+        quality = ""
+    quality = str(quality)
+
+    thumbnail = _valid_url(file_data.get("thumbnail")) or ""
+
+    if not playable_url and not download_url:
+        return None
+
+    if not playable_url and quality and quality in quality_urls:
+        playable_url = quality_urls[quality]
+
+    return FileResult(
+        title=title,
+        playable_url=playable_url,
+        download_url=download_url,
+        size_formatted=size_formatted,
+        duration=duration,
+        quality=quality,
+        thumbnail=thumbnail,
+        quality_urls=quality_urls,
+    )
+
+
 async def resolve_link(url: str, platform: str) -> ResolveResult:
-    # Keep other platforms working.
+    # Preserve the existing placeholder behavior for other platforms.
     if platform != "terabox":
-        return ResolveResult(
+        result = ResolveResult(
             platform=platform,
             original_url=url,
             title="User submitted link",
             playable_url=url,
             note="No resolver configured for this platform yet.",
         )
+        result.files = [
+            FileResult(title=result.title, playable_url=url)
+        ]
+        return result
 
     api_key = os.getenv("TERABOX_API_KEY", "").strip()
 
@@ -111,10 +163,7 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
         ) as client:
             response = await client.get(
                 API_URL,
-                params={
-                    "secret": api_key,
-                    "url": url,
-                },
+                params={"secret": api_key, "url": url},
             )
             response.raise_for_status()
             data = response.json()
@@ -151,8 +200,8 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             note="Invalid API response.",
         )
 
-    files = data.get("list")
-    if not isinstance(files, list) or not files:
+    raw_files = data.get("list")
+    if not isinstance(raw_files, list) or not raw_files:
         return ResolveResult(
             platform=platform,
             original_url=url,
@@ -160,58 +209,33 @@ async def resolve_link(url: str, platform: str) -> ResolveResult:
             note="No file was returned by the API.",
         )
 
-    file_data = files[0]
-    if not isinstance(file_data, dict):
+    files: list[FileResult] = []
+    for raw_file in raw_files:
+        parsed = _parse_file(raw_file)
+        if parsed:
+            files.append(parsed)
+
+    if not files:
         return ResolveResult(
             platform=platform,
             original_url=url,
             title="TeraBox link",
-            note="Invalid file data returned by the API.",
+            note="No playable/downloadable file was returned by the API.",
         )
 
-    title = file_data.get("name")
-    if not isinstance(title, str) or not title.strip():
-        title = "TeraBox file"
-
-    playable_url, download_url, quality_urls = _extract_urls(file_data)
-
-    size_formatted = file_data.get("size_formatted") or ""
-    duration = str(file_data.get("duration") or "")
-
-    quality = file_data.get("quality") or ""
-    if isinstance(quality, (list, dict)):
-        quality = ""
-    quality = str(quality)
-
-    thumbnail = _valid_url(file_data.get("thumbnail")) or ""
-
-    # When API gives a quality label but no direct stream_url, pick its matching URL.
-    if not playable_url and quality and quality in quality_urls:
-        playable_url = quality_urls[quality]
-
-    if not playable_url and not download_url:
-        return ResolveResult(
-            platform=platform,
-            original_url=url,
-            title=title,
-            size_formatted=str(size_formatted),
-            duration=duration,
-            quality=quality,
-            thumbnail=thumbnail,
-            quality_urls=quality_urls,
-            note="No valid playable/download URL was returned.",
-        )
+    first = files[0]
 
     return ResolveResult(
         platform=platform,
         original_url=url,
-        title=title,
-        playable_url=playable_url,
-        download_url=download_url,
-        size_formatted=str(size_formatted),
-        duration=duration,
-        quality=quality,
-        thumbnail=thumbnail,
-        quality_urls=quality_urls,
+        title=first.title,
+        playable_url=first.playable_url,
+        download_url=first.download_url,
+        size_formatted=first.size_formatted,
+        duration=first.duration,
+        quality=first.quality,
+        thumbnail=first.thumbnail,
+        quality_urls=first.quality_urls.copy(),
+        files=files,
         note="TeraBox link resolved successfully.",
     )

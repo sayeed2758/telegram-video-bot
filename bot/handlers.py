@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 from .config import ADMIN_ID
-from .database import count_users, upsert_user
+from .database import count_users, log_request, request_stats, upsert_user
 from .keyboards import (
     file_selection_keyboard,
     home_keyboard,
@@ -132,8 +132,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("⛔ Admin only.")
         return
 
+    stats = await request_stats()
+
+    success_rate = round(stats["success"] * 100 / stats["total"], 1) if stats["total"] else 0
+
+    message = (
+        "📊 <b>Admin Dashboard</b>\n\n"
+        f"👥 <b>Users:</b> {await count_users()}\n"
+        f"🔗 <b>Total requests:</b> {stats['total']}\n"
+        f"✅ <b>Successful:</b> {stats['success']}\n"
+        f"❌ <b>Failed:</b> {stats['failed']}\n"
+        f"📈 <b>Success rate:</b> {success_rate}%\n\n"
+        "<b>By platform</b>\n"
+        f"• TeraBox: {stats['terabox']}\n"
+        f"• DiskWala: {stats['diskwala']}\n"
+        f"• Flezen: {stats['flezen']}"
+    )
+
     await update.message.reply_text(
-        f"📊 <b>Total users:</b> {await count_users()}",
+        message,
         parse_mode=ParseMode.HTML,
     )
 

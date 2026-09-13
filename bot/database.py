@@ -21,6 +21,26 @@ async def init_db() -> None:
             )
             '''
         )
+        con.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS request_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            '''
+        )
+        con.execute(
+            'CREATE INDEX IF NOT EXISTS idx_request_logs_status ON request_logs(status)'
+        )
+        con.execute(
+            'CREATE INDEX IF NOT EXISTS idx_request_logs_platform ON request_logs(platform)'
+        )
+        con.execute(
+            'CREATE INDEX IF NOT EXISTS idx_request_logs_created ON request_logs(created_at)'
+        )
         con.commit()
 
 
@@ -43,5 +63,34 @@ async def upsert_user(user_id: int, username: str | None, first_name: str | None
 
 async def count_users() -> int:
     with _connect() as con:
-        row = con.execute("SELECT COUNT(*) FROM users").fetchone()
+        row = con.execute('SELECT COUNT(*) FROM users').fetchone()
         return int(row[0])
+
+
+async def log_request(user_id: int, platform: str, status: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as con:
+        con.execute(
+            'INSERT INTO request_logs (user_id, platform, status, created_at) VALUES (?, ?, ?, ?)',
+            (user_id, platform, status, now),
+        )
+        con.commit()
+
+
+async def request_stats() -> dict[str, int]:
+    with _connect() as con:
+        total = con.execute('SELECT COUNT(*) FROM request_logs').fetchone()[0]
+        success = con.execute("SELECT COUNT(*) FROM request_logs WHERE status = 'success'").fetchone()[0]
+        failed = con.execute("SELECT COUNT(*) FROM request_logs WHERE status = 'failed'").fetchone()[0]
+        terabox = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'terabox'").fetchone()[0]
+        diskwala = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'diskwala'").fetchone()[0]
+        flezen = con.execute("SELECT COUNT(*) FROM request_logs WHERE platform = 'flezen'").fetchone()[0]
+
+    return {
+        'total': int(total),
+        'success': int(success),
+        'failed': int(failed),
+        'terabox': int(terabox),
+        'diskwala': int(diskwala),
+        'flezen': int(flezen),
+    }

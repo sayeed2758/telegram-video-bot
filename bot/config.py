@@ -38,15 +38,6 @@ TERABOX_API_CACHE_TTL_SECONDS = int(
     os.getenv("TERABOX_API_CACHE_TTL_SECONDS", "90").strip() or "90"
 )
 
-# Persistent upstream 429 recovery. The bot respects Retry-After when present;
-# otherwise it uses an escalating local cooldown to avoid hammering the API.
-TERABOX_API_429_FALLBACK_SECONDS = int(
-    os.getenv("TERABOX_API_429_FALLBACK_SECONDS", "120").strip() or "120"
-)
-TERABOX_API_429_MAX_COOLDOWN_SECONDS = int(
-    os.getenv("TERABOX_API_429_MAX_COOLDOWN_SECONDS", "900").strip() or "900"
-)
-
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.

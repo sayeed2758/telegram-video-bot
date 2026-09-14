@@ -10,7 +10,6 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 
-from bot.api_guard import get_cooldown, record_failure, record_rate_limit, record_success
 from bot.config import (
     TERABOX_COOKIE,
     TERABOX_GATEWAY_URL,
@@ -336,18 +335,6 @@ async def _playterabox_api_resolve(
         logger.info("PlayTeraBox API cache hit for share URL")
         return cached
 
-    cooldown = get_cooldown()
-    if cooldown["blocked"]:
-        remaining = int(cooldown["remaining"])
-        mins, secs = divmod(remaining, 60)
-        wait = f"{mins}m {secs}s" if mins else f"{secs}s"
-        logger.warning("PlayTeraBox API local cooldown active: %s remaining", wait)
-        return ResolveResult(
-            False,
-            [],
-            f"PlayTeraBox API rate limit cooldown is active. Retry in {wait}.",
-        )
-
     await _wait_for_api_slot()
 
     try:
@@ -366,24 +353,16 @@ async def _playterabox_api_resolve(
 
     logger.info("PlayTeraBox API GET /api/proxy -> HTTP %s", response.status_code)
 
-    if response.status_code == 429:
-        cooldown_seconds = record_rate_limit(response.headers)
-        mins, secs = divmod(cooldown_seconds, 60)
-        wait = f"{mins}m {secs}s" if mins else f"{secs}s"
-        logger.warning("PlayTeraBox API rate-limited the request (HTTP 429). Local cooldown=%ss", cooldown_seconds)
-        return ResolveResult(
-            False, [], f"PlayTeraBox API rate limit exceeded. Retry in {wait}."
-        )
-
-    if response.status_code == 200:
-        record_success(200)
-    elif response.status_code >= 400:
-        record_failure(response.status_code)
-
     try:
         payload = response.json()
     except (ValueError, json.JSONDecodeError):
         return ResolveResult(False, [], "PlayTeraBox API returned invalid JSON.")
+
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After")
+        suffix = f" Retry after {retry_after} seconds." if retry_after else " Please wait a few seconds and retry."
+        logger.warning("PlayTeraBox API rate-limited the request (HTTP 429).%s", suffix)
+        return ResolveResult(False, [], "PlayTeraBox API rate limit exceeded." + suffix)
 
     if response.status_code == 401:
         return ResolveResult(False, [], "PlayTeraBox API key is invalid or missing.")

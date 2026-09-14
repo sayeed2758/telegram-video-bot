@@ -100,8 +100,13 @@ async def process_url(
     message,
     context: ContextTypes.DEFAULT_TYPE,
     url: str,
+    password: str | None = None,
 ) -> None:
     context.user_data["last_url"] = url
+    if password is None:
+        context.user_data.pop("last_password", None)
+    else:
+        context.user_data["last_password"] = password
 
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
@@ -109,7 +114,7 @@ async def process_url(
         parse_mode="HTML",
     )
 
-    result = await resolve_link(url)
+    result = await resolve_link(url, password=password)
 
     if result.ok:
         lines = [
@@ -149,11 +154,20 @@ async def process_url(
 
     reason = result.message
 
-    if "verify" in reason.lower():
+    lowered = reason.lower()
+
+    if "password required" in lowered:
+        context.user_data["awaiting_password"] = True
+        text = (
+            "🔐 <b>Password required.</b>\n\n"
+            "This TeraBox share is asking for an extraction/password code.\n\n"
+            "✍️ Send the share password here and I will retry the same link."
+        )
+    elif "verification required" in lowered or "need verify" in lowered:
         text = (
             "🛡️ <b>TeraBox verification required.</b>\n\n"
-            "The direct resolver and no-cookie fallback could not resolve this share.\n\n"
-            "🔐 If this is a public share, press 🔄 Retry once. If it still fails, a valid TeraBox session may be required.\n\n"
+            "This share could not be resolved by the available no-cookie routes.\n\n"
+            "🔐 A valid TeraBox session may be required.\n\n"
             "⚠️ Never send your cookie/token in Telegram or GitHub."
         )
     else:
@@ -179,6 +193,28 @@ async def process_url(
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if message is None or not message.text:
+        return
+
+    # Phase 11: accept a share password only after the bot explicitly asks for it.
+    if context.user_data.get("awaiting_password"):
+        password = message.text.strip()
+        if not password or len(password) > 64:
+            await message.reply_text(
+                "⚠️ <b>Invalid password input.</b>\n\nPlease send the TeraBox share password again.",
+                parse_mode="HTML",
+            )
+            return
+
+        context.user_data.pop("awaiting_password", None)
+        last_url = context.user_data.get("last_url")
+        if not last_url:
+            await message.reply_text(
+                "ℹ️ I no longer have the previous link. Please send the TeraBox link again.",
+                reply_markup=welcome_keyboard(),
+            )
+            return
+
+        await process_url(message, context, last_url, password=password)
         return
 
     url = extract_url(message.text)
@@ -248,7 +284,7 @@ async def callback_handler(
             )
             return
 
-        await process_url(query.message, context, last_url)
+        await process_url(query.message, context, last_url, password=context.user_data.get("last_password"))
 
 
 def register_handlers(application: Application) -> None:

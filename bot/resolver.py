@@ -182,14 +182,14 @@ def _parse_files(payload) -> list[ResolvedFile]:
     return result
 
 
-async def _proxy_resolve(client: httpx.AsyncClient, code: str) -> ResolveResult:
+async def _proxy_resolve(client: httpx.AsyncClient, code: str, password: str | None = None) -> ResolveResult:
     if not TERABOX_PROXY_URL:
         return ResolveResult(False, [], "Proxy resolver is not configured.")
 
     try:
         response = await client.get(
             TERABOX_PROXY_URL,
-            params={"mode": "resolve", "surl": code, "refresh": "1"},
+            params={"mode": "resolve", "surl": code, "refresh": "1", **({"pwd": password} if password else {})},
         )
     except httpx.HTTPError as exc:
         logger.warning("Proxy resolver request failed: %s", exc)
@@ -237,13 +237,14 @@ DEFAULT_TBX_PROXY_URL = "https://tbx-proxy.shakir-ansarii075.workers.dev/"
 async def _tbx_proxy_resolve(
     client: httpx.AsyncClient,
     code: str,
+    password: str | None = None,
 ) -> ResolveResult:
     """Try the documented TBX Cloudflare proxy without forwarding private cookies."""
     proxy = (TERABOX_TBX_PROXY_URL or DEFAULT_TBX_PROXY_URL).rstrip("/") + "/"
     try:
         response = await client.get(
             proxy,
-            params={"mode": "resolve", "surl": code, "refresh": "1", "raw": "1"},
+            params={"mode": "resolve", "surl": code, "refresh": "1", "raw": "1", **({"pwd": password} if password else {})},
             headers=BROWSER_HEADERS,
         )
     except httpx.HTTPError as exc:
@@ -282,6 +283,7 @@ async def _tbx_proxy_resolve(
 async def _public_gateway_resolve(
     client: httpx.AsyncClient,
     share_url: str,
+    password: str | None = None,
 ) -> ResolveResult:
     gateways = TERABOX_PUBLIC_GATEWAYS or DEFAULT_PUBLIC_GATEWAYS
 
@@ -289,7 +291,7 @@ async def _public_gateway_resolve(
         try:
             response = await client.get(
                 gateway,
-                params={"url": share_url},
+                params={"url": share_url, **({"pwd": password} if password else {})},
                 headers=BROWSER_HEADERS,
             )
         except httpx.HTTPError as exc:
@@ -323,6 +325,7 @@ async def _public_gateway_resolve(
 async def _gateway_resolve(
     client: httpx.AsyncClient,
     share_url: str,
+    password: str | None = None,
 ) -> ResolveResult:
     """Use only an explicitly configured compatible gateway."""
     if not TERABOX_GATEWAY_URL:
@@ -336,7 +339,7 @@ async def _gateway_resolve(
     try:
         response = await client.get(
             TERABOX_GATEWAY_URL,
-            params={"url": share_url, "resolve": "true"},
+            params={"url": share_url, "resolve": "true", **({"pwd": password} if password else {})},
             headers=headers,
         )
     except httpx.HTTPError as exc:
@@ -380,6 +383,7 @@ async def _native_resolve(
     client: httpx.AsyncClient,
     url: str,
     code: str,
+    password: str | None = None,
 ) -> ResolveResult:
     headers = dict(BROWSER_HEADERS)
     cookie = _cookie_header()
@@ -419,6 +423,8 @@ async def _native_resolve(
     # Some current API responses use bdstoken as part of the verified session.
     if bd_token:
         params["bdstoken"] = bd_token
+    if password:
+        params["pwd"] = password
 
     last_error = "No usable files returned."
 
@@ -462,7 +468,7 @@ async def _native_resolve(
     return ResolveResult(False, [], last_error)
 
 
-async def resolve_link(url: str) -> ResolveResult:
+async def resolve_link(url: str, password: str | None = None) -> ResolveResult:
     code = _short_code(url)
     if not code:
         return ResolveResult(False, [], "Invalid TeraBox share URL.")
@@ -474,38 +480,51 @@ async def resolve_link(url: str) -> ResolveResult:
     ) as client:
         # 1. Optional gateway explicitly configured by the owner.
         if TERABOX_GATEWAY_URL:
-            gateway_result = await _gateway_resolve(client, url)
+            gateway_result = await _gateway_resolve(client, url, password)
             if gateway_result.ok:
                 return gateway_result
 
         # 2. Optional unified proxy explicitly configured by the owner.
         if TERABOX_PROXY_URL:
-            proxy_result = await _proxy_resolve(client, code)
+            proxy_result = await _proxy_resolve(client, code, password)
             if proxy_result.ok:
                 return proxy_result
 
         # 3. Native TeraBox flow with optional verified session.
-        native_result = await _native_resolve(client, url, code)
+        native_result = await _native_resolve(client, url, code, password)
         if native_result.ok:
             return native_result
 
         # 4. Documented no-cookie TBX proxy. Its stream mode can provide an
         # HLS playback URL without exposing the user's private cookie.
-        tbx_result = await _tbx_proxy_resolve(client, code)
+        tbx_result = await _tbx_proxy_resolve(client, code, password)
         if tbx_result.ok:
             return tbx_result
 
         # 5. Other public no-cookie gateways.
-        public_result = await _public_gateway_resolve(client, url)
+        public_result = await _public_gateway_resolve(client, url, password)
         if public_result.ok:
             return public_result
 
-        reason = native_result.message
-        if "need verify" in reason.lower() or "verify" in reason.lower():
+        # Prefer the most informative failure we observed. If any path
+        # explicitly mentions a password/verification requirement, surface that.
+        reasons = [
+            native_result.message,
+            tbx_result.message,
+            public_result.message,
+        ]
+        combined = " | ".join(str(x) for x in reasons if x)
+        lowered = combined.lower()
+
+        if any(token in lowered for token in ("password", "pwd", "400141", "errno -3", "need extract code")):
+            return ResolveResult(False, [], "Password required for this TeraBox share.")
+
+        if "need verify" in lowered or "verify" in lowered or "4000020" in lowered:
             if not _cookie_header():
-                reason += (
-                    " Public no-cookie gateways were also unable to resolve this share. "
-                    "A valid TeraBox session (TERABOX_NDUS or TERABOX_COOKIE) may be required."
+                return ResolveResult(
+                    False,
+                    [],
+                    "TeraBox verification required. No-cookie resolvers could not access this share.",
                 )
 
-        return ResolveResult(False, [], reason)
+        return ResolveResult(False, [], native_result.message)

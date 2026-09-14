@@ -39,6 +39,10 @@ def file_keyboard(direct_url: str | None, stream_url: str | None = None) -> Inli
                 InlineKeyboardButton("📥 Download", url=direct_url),
             ]
         )
+    elif stream_url:
+        rows.append(
+            [InlineKeyboardButton("▶️ Play Video", url=stream_url)]
+        )
 
     rows.append(
         [

@@ -1064,11 +1064,24 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await process_url(message, context, last_url, password=password)
         return
 
-    url = extract_url(message.text)
+    # Phase 30.1: one Telegram message may contain multiple TeraBox links.
+    # Process every unique link instead of silently taking only the first one.
+    urls = extract_urls(message.text)
 
-    if url:
+    if urls:
         context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
-        await process_url(message, context, url)
+
+        if len(urls) > 1:
+            await message.reply_text(
+                f"📦 <b>{len(urls)} TeraBox links detected.</b>\n\n"
+                "⏳ I will process them one by one. Each link gets its own result.",
+                parse_mode="HTML",
+            )
+
+        for index, url in enumerate(urls, start=1):
+            # Keep the existing single-link processing path untouched.
+            # This preserves rate limiting, queue handling, history and analytics.
+            await process_url(message, context, url)
         return
 
     await message.reply_text(

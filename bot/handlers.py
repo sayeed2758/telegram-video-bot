@@ -1,6 +1,7 @@
 from pathlib import Path
 from html import escape
 from time import perf_counter
+import asyncio
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden, RetryAfter
@@ -41,6 +42,7 @@ from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, get_user_record, mark_inactive, register_user, search_users
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
+from bot.cleanup import purge_expired_history
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -916,13 +918,16 @@ async def process_url(
             )
             return
 
+    purge_expired_history()
     processing_started_at = perf_counter()
     if caller_id is not None:
         record_event(int(caller_id), "processing_started")
 
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
-        "⏳ Processing your video...",
+        "⏳ <b>Processing your video...</b>\n"
+        "[░░░░░░░░░░] 0%\n"
+        "🔎 Detecting link",
         parse_mode="HTML",
     )
 
@@ -966,12 +971,49 @@ async def process_url(
             pass
 
     cache_hit = False
+    progress_stop = asyncio.Event()
+
+    async def _progress_loop() -> None:
+        stages = [
+            (18, "🔎 Link detected"),
+            (38, "⚡ Connecting to PlayTeraBox"),
+            (60, "📦 Fetching video information"),
+            (78, "🎬 Preparing playback"),
+            (92, "✅ Finalizing result"),
+        ]
+        for percent, label in stages:
+            if progress_stop.is_set():
+                return
+            filled = percent // 10
+            bar = "█" * filled + "░" * (10 - filled)
+            try:
+                await status.edit_text(
+                    "⏳ <b>Processing your video...</b>\n"
+                    f"[{bar}] {percent}%\n"
+                    f"{label}",
+                    parse_mode="HTML",
+                )
+            except (BadRequest, Forbidden):
+                return
+            try:
+                await asyncio.wait_for(progress_stop.wait(), timeout=1.8)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+    progress_task = asyncio.create_task(_progress_loop())
     try:
         result, cache_hit = await get_or_resolve(
             cache_key(url, password),
             lambda: resolve_link(url, password=password),
         )
     finally:
+        progress_stop.set()
+        progress_task.cancel()
+        try:
+            await progress_task
+        except asyncio.CancelledError:
+            pass
         await RESOLVE_QUEUE.release(queue_ticket)
 
     duration_ms = int((perf_counter() - processing_started_at) * 1000)
@@ -1051,6 +1093,7 @@ async def process_url(
                 "🎬 <b>Videos Ready</b>",
                 "",
                 "⚡ <b>Processed via PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
+                "🧹 <i>History details clear automatically after 1 hour.</i>",
                 f"📦 <b>{len(result.files)} file(s)</b>",
                 "",
                 "👇 <b>Select a file to view actions</b>",
@@ -1092,6 +1135,7 @@ async def process_url(
             "✅ <b>Video Ready</b>",
             "",
             "⚡ <b>PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
+            "🧹 <i>History details are automatically cleared after 1 hour.</i>",
         ]
 
         if first_file:

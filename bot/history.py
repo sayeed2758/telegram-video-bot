@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -14,6 +14,7 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = Path(os.getenv("HISTORY_DB_PATH", str(DATA_DIR / "history.sqlite3")))
 TIMEZONE = ZoneInfo(os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata")
 DEFAULT_HISTORY_LIMIT = 10
+HISTORY_TTL_SECONDS = max(300, int(os.getenv("HISTORY_TTL_SECONDS", "3600").strip() or "3600"))
 
 
 def _connect() -> sqlite3.Connection:
@@ -38,6 +39,9 @@ def _connect() -> sqlite3.Connection:
         ON processing_history(user_id, created_at DESC, id DESC);
         """
     )
+    cutoff = (datetime.now(TIMEZONE) - timedelta(seconds=HISTORY_TTL_SECONDS)).isoformat(timespec="seconds")
+    connection.execute("DELETE FROM processing_history WHERE created_at < ?", (cutoff,))
+    connection.commit()
     return connection
 
 

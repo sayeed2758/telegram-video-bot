@@ -58,7 +58,7 @@ def _session_status_text() -> str:
         else "❌ No private TeraBox session configured."
     )
     api_line = (
-        "✅ PlayTeraBox API configured."
+        "✅ PlayTeraBox API configured (GET /api/proxy)."
         if TERABOX_API_KEY
         else "❌ PlayTeraBox API key not configured."
     )

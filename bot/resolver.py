@@ -146,6 +146,24 @@ def _format_size(value) -> str:
     return f"{int(number)} {units[index]}" if index == 0 else f"{number:.2f} {units[index]}"
 
 
+def _pick_fast_stream_url(value) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if not isinstance(value, dict):
+        return None
+
+    # Prefer the best documented quality when the API returns a quality map.
+    for quality in ("1080p", "720p", "480p", "360p"):
+        url = value.get(quality)
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+
+    for url in value.values():
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return None
+
+
 def _file_from_dict(item: dict) -> ResolvedFile | None:
     name = (
         item.get("server_filename")
@@ -160,18 +178,31 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
     thumb = thumbs.get("url3") if isinstance(thumbs, dict) else None
     thumb = thumb or item.get("thumbnail") or item.get("thumb")
 
+    # PlayTeraBox /api/proxy fields. Keep older resolver field names too so
+    # previous owner-controlled resolvers remain compatible.
     direct = (
-        item.get("dlink")
+        item.get("download_link")
+        or item.get("fast_download_link")
+        or item.get("dlink")
         or item.get("download_url")
         or item.get("downloadUrl")
         or item.get("direct_link")
     )
 
+    stream = (
+        item.get("stream_url")
+        or item.get("streamUrl")
+        or item.get("m3u8")
+        or item.get("hls")
+        or _pick_fast_stream_url(item.get("fast_stream_url"))
+    )
+
     return ResolvedFile(
         name=str(name),
         size=_format_size(item.get("size") or item.get("file_size")),
-        thumbnail=thumb,
+        thumbnail=thumb if isinstance(thumb, str) else None,
         direct_url=direct if isinstance(direct, str) else None,
+        stream_url=stream if isinstance(stream, str) else None,
     )
 
 
@@ -188,29 +219,33 @@ async def _playterabox_api_resolve(
     client: httpx.AsyncClient,
     share_url: str,
 ) -> ResolveResult:
-    """Resolve a share through the owner's PlayTeraBox API subscription.
+    """Resolve a share through the active PlayTeraBox /api/proxy endpoint.
 
-    The documented API uses POST /api/terabox-pro with JSON {"url": ...}
-    and the ApiDash-Key header. No private TeraBox cookie is forwarded.
+    The user's PlayTeraBox dashboard documents:
+      GET https://api.playterabox.com/api/proxy
+      ?secret=<API key>&url=<TeraBox share URL>
+
+    The key is sent only to PlayTeraBox as the secret query parameter.
+    Private TeraBox cookies are never forwarded to this service.
     """
     if not TERABOX_API_KEY:
         return ResolveResult(False, [], "PlayTeraBox API key is not configured.")
 
     try:
-        response = await client.post(
+        response = await client.get(
             TERABOX_API_URL,
-            headers={
-                "Content-Type": "application/json",
-                "ApiDash-Key": TERABOX_API_KEY,
-                "Accept": "application/json",
-            },
-            json={"url": share_url},
+            params={"secret": TERABOX_API_KEY, "url": share_url},
+            headers={"Accept": "application/json"},
         )
     except httpx.HTTPError as exc:
         logger.warning("PlayTeraBox API request failed: %s", exc.__class__.__name__)
-        return ResolveResult(False, [], f"PlayTeraBox API request failed: {exc.__class__.__name__}")
+        return ResolveResult(
+            False,
+            [],
+            f"PlayTeraBox API request failed: {exc.__class__.__name__}",
+        )
 
-    logger.info("PlayTeraBox API -> HTTP %s", response.status_code)
+    logger.info("PlayTeraBox API GET /api/proxy -> HTTP %s", response.status_code)
 
     try:
         payload = response.json()
@@ -222,18 +257,30 @@ async def _playterabox_api_resolve(
     if response.status_code == 402:
         return ResolveResult(False, [], "PlayTeraBox API wallet balance is insufficient.")
     if response.status_code == 403:
-        return ResolveResult(False, [], "PlayTeraBox API is not subscribed or access is denied.")
+        return ResolveResult(False, [], "PlayTeraBox API access is denied or the API is not subscribed.")
     if response.status_code >= 400:
         reason = None
         if isinstance(payload, dict):
             reason = payload.get("message") or payload.get("error") or payload.get("detail")
-        return ResolveResult(False, [], str(reason or f"PlayTeraBox API returned HTTP {response.status_code}."))
+        return ResolveResult(
+            False,
+            [],
+            str(reason or f"PlayTeraBox API returned HTTP {response.status_code}."),
+        )
 
-    # The API documentation promises metadata/download/streaming URLs, but
-    # response field names may evolve. First try the same flexible file parser,
-    # then inspect common link containers.
+    if isinstance(payload, dict):
+        status = str(payload.get("status", "")).lower().strip()
+        if status and status not in {"success", "ok", "true"}:
+            reason = payload.get("message") or payload.get("error") or payload.get("detail")
+            if reason:
+                return ResolveResult(False, [], str(reason))
+
     files = _parse_files(payload)
 
+    # Exact /api/proxy response shape is {status, total_files, list:[...]}.
+    # _parse_files already handles that list, including download_link and
+    # stream_url. The extra candidates below keep compatibility with possible
+    # wrapper objects returned by the API in the future.
     candidates = []
     if isinstance(payload, dict):
         for key in ("data", "result", "response", "file", "files", "dataList"):
@@ -250,11 +297,8 @@ async def _playterabox_api_resolve(
             if nested:
                 files.extend(nested)
         elif isinstance(candidate, list):
-            parsed = _parse_files(candidate)
-            if parsed:
-                files.extend(parsed)
+            files.extend(_parse_files(candidate))
 
-    # De-duplicate by name + URLs.
     unique = []
     seen = set()
     for item in files:
@@ -262,46 +306,18 @@ async def _playterabox_api_resolve(
         if key not in seen:
             seen.add(key)
             unique.append(item)
-    files = unique
 
-    # If the API returns a single object with top-level link fields but no
-    # explicit filename, still create a useful file result.
-    if not files and isinstance(payload, dict):
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-        name = data.get("name") or data.get("filename") or data.get("file_name") or "TeraBox file"
-        direct = (
-            data.get("download_url")
-            or data.get("downloadUrl")
-            or data.get("download")
-            or data.get("dlink")
-            or data.get("url")
-        )
-        stream = (
-            data.get("stream_url")
-            or data.get("streamUrl")
-            or data.get("m3u8")
-            or data.get("hls")
-        )
-        thumb = data.get("thumbnail") or data.get("thumb")
-        if direct or stream:
-            files = [
-                ResolvedFile(
-                    name=str(name),
-                    size=_format_size(data.get("size") or data.get("file_size")),
-                    thumbnail=thumb if isinstance(thumb, str) else None,
-                    direct_url=direct if isinstance(direct, str) else None,
-                    stream_url=stream if isinstance(stream, str) else None,
-                )
-            ]
-
-    if not files:
+    if not unique:
+        reason = None
         if isinstance(payload, dict):
             reason = payload.get("message") or payload.get("error") or payload.get("detail")
-            if reason:
-                return ResolveResult(False, [], str(reason))
-        return ResolveResult(False, [], "PlayTeraBox API returned no usable file data.")
+        return ResolveResult(
+            False,
+            [],
+            str(reason or "PlayTeraBox API returned no usable file data."),
+        )
 
-    return ResolveResult(True, files, f"Found {len(files)} file(s) via PlayTeraBox API.")
+    return ResolveResult(True, unique, f"Found {len(unique)} file(s) via PlayTeraBox API.")
 
 
 async def _proxy_resolve(client: httpx.AsyncClient, code: str, password: str | None = None) -> ResolveResult:

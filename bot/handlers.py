@@ -11,6 +11,7 @@ from telegram.ext import (
     filters,
 )
 
+from bot.api_guard import format_status as api_guard_status
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
@@ -270,6 +271,21 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
         "✅ <b>User limit reset.</b>\n\n"
         f"👤 User: <code>{target_id}</code>\n"
         "The default daily limit is active again.",
+        parse_mode="HTML",
+    )
+
+
+async def api_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    if not is_admin(user.id):
+        await message.reply_text("🚫 You are not authorized to use this command.")
+        return
+    api_line = "✅ Configured" if TERABOX_API_KEY else "❌ Not configured"
+    await message.reply_text(
+        f"🔐 API key: <b>{api_line}</b>\n\n" + api_guard_status(),
         parse_mode="HTML",
     )
 
@@ -788,6 +804,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
+    application.add_handler(CommandHandler("apistatus", api_status_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

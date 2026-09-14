@@ -74,3 +74,30 @@ Admin tools:
 
 Temporary queue state is kept in memory for the running Render instance; it is intentionally not written to SQLite. Existing history, analytics, rate limits, broadcast, and resolver settings are preserved.
 
+
+## Phase 31 — Result Cache & Duplicate Protection
+
+Phase 31 adds a short in-memory cache for successful resolved results and same-URL single-flight protection. Concurrent users sending the exact same TeraBox URL share one upstream resolver request instead of creating duplicate PlayTeraBox API calls.
+
+Environment variables are optional:
+- `RESULT_CACHE_TTL_SECONDS` — cache lifetime in seconds (default `120`)
+- `RESULT_CACHE_MAX_ENTRIES` — maximum cached results (default `100`)
+
+Resolved playback/download URLs are deliberately **not persisted to SQLite** because provider URLs can expire. The cache is cleared automatically when the Render process restarts.
+
+A cache hit still counts normally against the requesting user's daily quota and appears in the user's history, because the bot is still delivering a processed video result to that user.
+
+
+## Phase 33 — Security & Production Hardening
+
+Optional Render variables:
+
+```text
+WEBHOOK_SECRET_TOKEN=<random secret token>
+MAX_MESSAGE_LENGTH=12000
+MAX_LINKS_PER_MESSAGE=10
+```
+
+`WEBHOOK_SECRET_TOKEN` is optional. When set, Telegram webhook requests must include the matching secret token. Leaving it empty preserves the current deployment behavior.
+
+The bot now bounds incoming message size and the number of links processed from one message. Expected Telegram API errors are handled quietly, and webhook details are no longer printed as a full URL in application logs.

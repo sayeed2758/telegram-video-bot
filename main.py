@@ -17,6 +17,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram-webhook").strip("/")
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
 
 
 def main() -> None:
@@ -39,7 +40,7 @@ def main() -> None:
     webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"
 
     logger.info("Starting Advance Tera Video Bot.")
-    logger.info("Webhook URL: %s", webhook_url)
+    logger.info("Webhook endpoint configured on /%s", WEBHOOK_PATH)
     logger.info("Listening on 0.0.0.0:%s", port)
 
     application.run_webhook(
@@ -47,6 +48,7 @@ def main() -> None:
         port=port,
         url_path=WEBHOOK_PATH,
         webhook_url=webhook_url,
+        secret_token=WEBHOOK_SECRET_TOKEN or None,
         drop_pending_updates=True,
         allowed_updates=["message", "callback_query"],
     )

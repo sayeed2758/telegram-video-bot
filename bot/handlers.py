@@ -858,21 +858,23 @@ async def process_url(
 
         if len(result.files) > 1:
             lines = [
-                "✅ <b>Ready!</b>",
+                "🎬 <b>Videos Ready</b>",
                 "",
                 "⚡ <b>Processed via PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
+                f"📦 <b>{len(result.files)} file(s)</b>",
                 "",
-                f"📦 <b>{len(result.files)} file(s) found</b>",
-                "",
-                "👇 <b>Select a file to continue:</b>",
+                "👇 <b>Select a file to view actions</b>",
                 "",
             ]
 
             for index, item in enumerate(result.files, start=1):
-                lines.append(
-                    f"{index}️⃣ <b>{escape(str(item.name))}</b>\n"
-                    f"   💾 {escape(str(item.size))}"
-                )
+                name = escape(str(item.name))
+                size = escape(str(item.size))
+                lines.append(f"{index}️⃣ <b>{name}</b>\n   💾 {size}")
+                if item.duration:
+                    lines.append(f"   ⏱️ {escape(str(item.duration))}")
+                if item.quality:
+                    lines.append(f"   📺 {escape(str(item.quality))}")
                 if index < len(result.files):
                     lines.append("")
 
@@ -890,46 +892,47 @@ async def process_url(
         first_direct_url = first_file.direct_url if first_file else None
         first_stream_url = first_file.stream_url if first_file else None
 
+        def _compact_name(value: str, limit: int = 85) -> str:
+            clean = " ".join(str(value).split())
+            if len(clean) <= limit:
+                return clean
+            return clean[: limit - 1].rstrip() + "…"
+
         lines = [
-            "✅ <b>Ready!</b>",
+            "✅ <b>Video Ready</b>",
             "",
-            "⚡ <b>Processed via PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
-            "",
-            f"📦 <b>{len(result.files)} file(s) found</b>",
-            "",
+            "⚡ <b>PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
         ]
 
         if first_file:
-            lines.append(f"🎬 <b>1. {escape(str(first_file.name))}</b>")
-            lines.append(f"💾 Size: {escape(str(first_file.size))}")
-            if first_file.file_type:
-                lines.append(f"📁 Type: {escape(str(first_file.file_type))}")
+            lines.extend([
+                "",
+                f"🎬 <b>{escape(_compact_name(first_file.name))}</b>",
+                "",
+                f"💾 <b>Size:</b> {escape(str(first_file.size))}",
+                f"📁 <b>Type:</b> {escape(str(first_file.file_type or 'video'))}",
+            ])
             if first_file.duration:
-                lines.append(f"⏱️ Duration: {escape(str(first_file.duration))}")
+                lines.append(f"⏱️ <b>Duration:</b> {escape(str(first_file.duration))}")
             if first_file.quality:
-                lines.append(f"📺 Quality: {escape(str(first_file.quality))}")
-            if first_file.thumbnail:
-                lines.append("🖼️ Thumbnail available")
-            if first_file.stream_url or first_file.quality_urls:
-                lines.append("▶️ Video playback available")
+                lines.append(f"📺 <b>Quality:</b> {escape(str(first_file.quality))}")
+
+            playback_available = bool(first_file.stream_url or first_file.quality_urls)
+            lines.append(f"▶️ <b>Playback:</b> {'Available' if playback_available else 'Unavailable'}")
+            lines.append(f"📥 <b>Download:</b> {'Available' if first_file.direct_url else 'Unavailable'}")
             if first_file.quality_urls and len(first_file.quality_urls) >= 2:
                 qualities = ", ".join(first_file.quality_urls.keys())
-                lines.append(f"🎚️ Qualities: {escape(qualities)}")
-            if first_file.direct_url:
-                lines.append("📥 Direct download available")
-            else:
-                lines.append("📥 Direct download link unavailable")
-            lines.append("")
+                lines.append(f"🎚️ <b>Qualities:</b> {escape(qualities)}")
+            if first_file.thumbnail:
+                lines.append("🖼️ <b>Thumbnail:</b> Available")
 
-        if first_direct_url or first_stream_url:
-            lines.append("👇 <b>Choose an action below</b>")
-            if first_direct_url:
-                lines.append("📥 <i>Download opens the original file link directly.</i>")
+            lines.extend(["", "👇 <b>Choose an action</b>"])
         else:
-            lines.append(
-                "ℹ️ <b>File details found.</b>\n"
-                "No playable/download URL was returned for this result."
-            )
+            lines.extend([
+                "",
+                "ℹ️ <b>No file details were returned.</b>",
+                "Please try the link again.",
+            ])
 
         markup = file_keyboard(
             first_direct_url,

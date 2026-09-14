@@ -17,7 +17,7 @@ from bot.config import (
 
 logger = logging.getLogger(__name__)
 
-TIMEOUT = httpx.Timeout(12.0, connect=6.0)
+TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 
 SHARE_LIST_HOSTS = (
     "www.terabox.app",
@@ -469,6 +469,16 @@ async def _native_resolve(
 
 
 async def resolve_link(url: str, password: str | None = None, session_only: bool = False) -> ResolveResult:
+    """Resolve a TeraBox share without long anonymous fallback chains.
+
+    Phase 13 intentionally keeps the path small and predictable:
+    1) owner-configured gateway/proxy (if explicitly enabled)
+    2) native TeraBox request
+    3) return immediately on verification/password/session errors
+
+    Public third-party fallbacks are disabled here because repeated failing
+    external requests were leaving Telegram users stuck on Processing.
+    """
     code = _short_code(url)
     if not code:
         return ResolveResult(False, [], "Invalid TeraBox share URL.")
@@ -478,25 +488,39 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
         headers=BROWSER_HEADERS,
         follow_redirects=True,
     ) as client:
-        # 1. Optional gateway explicitly configured by the owner.
+        # 1. Optional owner-controlled gateway.
         if TERABOX_GATEWAY_URL:
             gateway_result = await _gateway_resolve(client, url, password)
             if gateway_result.ok:
                 return gateway_result
+            if _is_password_error(gateway_result.message):
+                return ResolveResult(False, [], "Password required for this TeraBox share.")
+            if _is_verification_error(gateway_result.message):
+                return ResolveResult(False, [], _session_message())
 
-        # 2. Optional unified proxy explicitly configured by the owner.
+        # 2. Optional owner-controlled proxy.
         if TERABOX_PROXY_URL:
             proxy_result = await _proxy_resolve(client, code, password)
             if proxy_result.ok:
                 return proxy_result
+            if _is_password_error(proxy_result.message):
+                return ResolveResult(False, [], "Password required for this TeraBox share.")
+            if _is_verification_error(proxy_result.message):
+                return ResolveResult(False, [], _session_message())
 
-        # 3. Native TeraBox flow with optional verified session.
+        # 3. Native TeraBox flow. This is the primary route.
         native_result = await _native_resolve(client, url, code, password)
         if native_result.ok:
             return native_result
 
-        # 4. When explicitly checking the private session, stop here so
-        # diagnostics are not hidden by anonymous/public fallbacks.
+        if _is_password_error(native_result.message):
+            return ResolveResult(False, [], "Password required for this TeraBox share.")
+
+        if _is_verification_error(native_result.message):
+            if session_only and not _cookie_header():
+                return ResolveResult(False, [], "No TeraBox session is configured.")
+            return ResolveResult(False, [], _session_message())
+
         if session_only:
             if _cookie_header():
                 return ResolveResult(
@@ -506,36 +530,38 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
                 )
             return ResolveResult(False, [], "No TeraBox session is configured.")
 
-        # 5. Documented no-cookie TBX proxy. Its stream mode can provide an
-        # HLS playback URL without exposing the user's private cookie.
-        tbx_result = await _tbx_proxy_resolve(client, code, password)
-        if tbx_result.ok:
-            return tbx_result
-
-        # 6. Other public no-cookie gateways.
-        public_result = await _public_gateway_resolve(client, url, password)
-        if public_result.ok:
-            return public_result
-
-        # Prefer the most informative failure we observed. If any path
-        # explicitly mentions a password/verification requirement, surface that.
-        reasons = [
-            native_result.message,
-            tbx_result.message,
-            public_result.message,
-        ]
-        combined = " | ".join(str(x) for x in reasons if x)
-        lowered = combined.lower()
-
-        if any(token in lowered for token in ("password", "pwd", "400141", "errno -3", "need extract code")):
-            return ResolveResult(False, [], "Password required for this TeraBox share.")
-
-        if "need verify" in lowered or "verify" in lowered or "4000020" in lowered:
-            if not _cookie_header():
-                return ResolveResult(
-                    False,
-                    [],
-                    "TeraBox verification required. No-cookie resolvers could not access this share.",
-                )
-
         return ResolveResult(False, [], native_result.message)
+
+
+def _is_verification_error(message: str) -> bool:
+    lowered = str(message).lower()
+    return any(token in lowered for token in (
+        "need verify",
+        "verification required",
+        "4000020",
+        "verify",
+        "session required",
+    ))
+
+
+def _is_password_error(message: str) -> bool:
+    lowered = str(message).lower()
+    return any(token in lowered for token in (
+        "password",
+        "need extract code",
+        "400141",
+        "errno -3",
+        "pwd",
+    ))
+
+
+def _session_message() -> str:
+    if _cookie_header():
+        return (
+            "TeraBox verification required. The configured session was not accepted "
+            "for this share."
+        )
+    return (
+        "TeraBox verification required. This share needs a valid TeraBox session."
+    )
+

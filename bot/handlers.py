@@ -144,7 +144,7 @@ async def process_url(
 
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
-        "⏳ Processing your link...",
+        "⏳ Checking the TeraBox share...",
         parse_mode="HTML",
     )
 
@@ -200,8 +200,9 @@ async def process_url(
     elif "verification required" in lowered or "need verify" in lowered:
         text = (
             "🛡️ <b>TeraBox verification required.</b>\n\n"
-            "This share could not be resolved by the available no-cookie routes.\n\n"
+            "TeraBox is asking the bot for a verified session for this share.\n\n"
             "🔐 A valid TeraBox session may be required.\n\n"
+            "⚡ I stopped the check early instead of waiting on multiple third-party resolvers.\n\n"
             "⚠️ Never send your cookie/token in Telegram or GitHub."
         )
     else:

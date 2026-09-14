@@ -22,6 +22,13 @@ TERABOX_PROXY_URL = os.getenv("TERABOX_PROXY_URL", "").strip()
 # public proxy is used for no-cookie metadata/stream fallback.
 TERABOX_TBX_PROXY_URL = os.getenv("TERABOX_TBX_PROXY_URL", "").strip()
 
+# Optional PlayTeraBox API Pro key. Keep this secret and set it only in Render.
+TERABOX_API_KEY = os.getenv("TERABOX_API_KEY", "").strip()
+TERABOX_API_URL = os.getenv(
+    "TERABOX_API_URL",
+    "https://api.playterabox.com/api/terabox-pro",
+).strip().rstrip("/")
+
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.

@@ -13,6 +13,8 @@ from bot.config import (
     TERABOX_PROXY_URL,
     TERABOX_PUBLIC_GATEWAYS,
     TERABOX_TBX_PROXY_URL,
+    TERABOX_API_KEY,
+    TERABOX_API_URL,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,6 +182,126 @@ def _parse_files(payload) -> list[ResolvedFile]:
         if parsed:
             result.append(parsed)
     return result
+
+
+async def _playterabox_api_resolve(
+    client: httpx.AsyncClient,
+    share_url: str,
+) -> ResolveResult:
+    """Resolve a share through the owner's PlayTeraBox API subscription.
+
+    The documented API uses POST /api/terabox-pro with JSON {"url": ...}
+    and the ApiDash-Key header. No private TeraBox cookie is forwarded.
+    """
+    if not TERABOX_API_KEY:
+        return ResolveResult(False, [], "PlayTeraBox API key is not configured.")
+
+    try:
+        response = await client.post(
+            TERABOX_API_URL,
+            headers={
+                "Content-Type": "application/json",
+                "ApiDash-Key": TERABOX_API_KEY,
+                "Accept": "application/json",
+            },
+            json={"url": share_url},
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("PlayTeraBox API request failed: %s", exc.__class__.__name__)
+        return ResolveResult(False, [], f"PlayTeraBox API request failed: {exc.__class__.__name__}")
+
+    logger.info("PlayTeraBox API -> HTTP %s", response.status_code)
+
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        return ResolveResult(False, [], "PlayTeraBox API returned invalid JSON.")
+
+    if response.status_code == 401:
+        return ResolveResult(False, [], "PlayTeraBox API key is invalid or missing.")
+    if response.status_code == 402:
+        return ResolveResult(False, [], "PlayTeraBox API wallet balance is insufficient.")
+    if response.status_code == 403:
+        return ResolveResult(False, [], "PlayTeraBox API is not subscribed or access is denied.")
+    if response.status_code >= 400:
+        reason = None
+        if isinstance(payload, dict):
+            reason = payload.get("message") or payload.get("error") or payload.get("detail")
+        return ResolveResult(False, [], str(reason or f"PlayTeraBox API returned HTTP {response.status_code}."))
+
+    # The API documentation promises metadata/download/streaming URLs, but
+    # response field names may evolve. First try the same flexible file parser,
+    # then inspect common link containers.
+    files = _parse_files(payload)
+
+    candidates = []
+    if isinstance(payload, dict):
+        for key in ("data", "result", "response", "file", "files", "dataList"):
+            value = payload.get(key)
+            if isinstance(value, (dict, list)):
+                candidates.append(value)
+
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            one = _file_from_dict(candidate)
+            if one:
+                files.append(one)
+            nested = _parse_files(candidate)
+            if nested:
+                files.extend(nested)
+        elif isinstance(candidate, list):
+            parsed = _parse_files(candidate)
+            if parsed:
+                files.extend(parsed)
+
+    # De-duplicate by name + URLs.
+    unique = []
+    seen = set()
+    for item in files:
+        key = (item.name, item.direct_url or "", item.stream_url or "")
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    files = unique
+
+    # If the API returns a single object with top-level link fields but no
+    # explicit filename, still create a useful file result.
+    if not files and isinstance(payload, dict):
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        name = data.get("name") or data.get("filename") or data.get("file_name") or "TeraBox file"
+        direct = (
+            data.get("download_url")
+            or data.get("downloadUrl")
+            or data.get("download")
+            or data.get("dlink")
+            or data.get("url")
+        )
+        stream = (
+            data.get("stream_url")
+            or data.get("streamUrl")
+            or data.get("m3u8")
+            or data.get("hls")
+        )
+        thumb = data.get("thumbnail") or data.get("thumb")
+        if direct or stream:
+            files = [
+                ResolvedFile(
+                    name=str(name),
+                    size=_format_size(data.get("size") or data.get("file_size")),
+                    thumbnail=thumb if isinstance(thumb, str) else None,
+                    direct_url=direct if isinstance(direct, str) else None,
+                    stream_url=stream if isinstance(stream, str) else None,
+                )
+            ]
+
+    if not files:
+        if isinstance(payload, dict):
+            reason = payload.get("message") or payload.get("error") or payload.get("detail")
+            if reason:
+                return ResolveResult(False, [], str(reason))
+        return ResolveResult(False, [], "PlayTeraBox API returned no usable file data.")
+
+    return ResolveResult(True, files, f"Found {len(files)} file(s) via PlayTeraBox API.")
 
 
 async def _proxy_resolve(client: httpx.AsyncClient, code: str, password: str | None = None) -> ResolveResult:
@@ -488,7 +610,23 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
         headers=BROWSER_HEADERS,
         follow_redirects=True,
     ) as client:
-        # 1. Optional owner-controlled gateway.
+        # 1. PlayTeraBox API Pro (owner subscription).
+        if TERABOX_API_KEY:
+            api_result = await _playterabox_api_resolve(client, url)
+            if api_result.ok:
+                return api_result
+            # A configured API is the authoritative paid route for this phase.
+            # For auth/subscription failures, return immediately instead of
+            # silently spending time on unrelated fallback services.
+            if any(token in api_result.message.lower() for token in (
+                "api key",
+                "wallet balance",
+                "not subscribed",
+                "access is denied",
+            )):
+                return api_result
+
+        # 2. Optional owner-controlled gateway.
         if TERABOX_GATEWAY_URL:
             gateway_result = await _gateway_resolve(client, url, password)
             if gateway_result.ok:
@@ -498,7 +636,7 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
             if _is_verification_error(gateway_result.message):
                 return ResolveResult(False, [], _session_message())
 
-        # 2. Optional owner-controlled proxy.
+        # 3. Optional owner-controlled proxy.
         if TERABOX_PROXY_URL:
             proxy_result = await _proxy_resolve(client, code, password)
             if proxy_result.ok:
@@ -508,7 +646,7 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
             if _is_verification_error(proxy_result.message):
                 return ResolveResult(False, [], _session_message())
 
-        # 3. Native TeraBox flow. This is the primary route.
+        # 4. Native TeraBox flow. This remains the backup route.
         native_result = await _native_resolve(client, url, code, password)
         if native_result.ok:
             return native_result

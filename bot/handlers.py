@@ -10,7 +10,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot.config import TERABOX_COOKIE, TERABOX_NDUS
+from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
 from bot.keyboards import error_keyboard, file_keyboard, welcome_keyboard
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.resolver import resolve_link
@@ -52,19 +52,21 @@ SESSION_TEXT = (
 
 
 def _session_status_text() -> str:
-    if TERABOX_COOKIE or TERABOX_NDUS:
-        source = "TERABOX_COOKIE" if TERABOX_COOKIE else "TERABOX_NDUS"
-        return (
-            f"{SESSION_TEXT}\n\n"
-            f"✅ Session configured via <b>{source}</b>.\n"
-            "🔎 Use the Retry button on a share to test whether TeraBox accepts it."
-        )
-
+    session_line = (
+        "✅ Private session configured."
+        if (TERABOX_COOKIE or TERABOX_NDUS)
+        else "❌ No private TeraBox session configured."
+    )
+    api_line = (
+        "✅ PlayTeraBox API configured."
+        if TERABOX_API_KEY
+        else "❌ PlayTeraBox API key not configured."
+    )
     return (
         f"{SESSION_TEXT}\n\n"
-        "❌ No private session is configured.\n"
-        "The bot will continue using the no-cookie routes.\n\n"
-        "⚠️ Never send your cookie/token in Telegram or GitHub."
+        f"{session_line}\n"
+        f"{api_line}\n\n"
+        "🔎 Send a share link to test the active resolver."
     )
 
 WELCOME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "welcome.jpg"

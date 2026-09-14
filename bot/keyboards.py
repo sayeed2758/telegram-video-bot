@@ -9,6 +9,7 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🌐 Supported", callback_data="supported"),
             ],
             [
+                InlineKeyboardButton("📜 History", callback_data="history"),
                 InlineKeyboardButton("🔄 Retry", callback_data="retry"),
             ],
         ]
@@ -23,6 +24,7 @@ def error_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("📖 Help", callback_data="help"),
             ],
             [
+                InlineKeyboardButton("📜 History", callback_data="history"),
                 InlineKeyboardButton("🏠 Start", callback_data="start"),
             ],
         ]

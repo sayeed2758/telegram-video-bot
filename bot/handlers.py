@@ -14,6 +14,7 @@ from telegram.ext import (
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
+from bot.history import clear_history, get_history, get_history_item, record_success
 from bot.keyboards import (
     error_keyboard,
     file_keyboard,
@@ -37,7 +38,8 @@ HELP_TEXT = (
     "2️⃣ I will detect and process the link.\n"
     "3️⃣ If the share can be resolved, its file details will be shown.\n\n"
     "⚠️ Some TeraBox shares may require verification or a valid session.\n\n"
-    "🚦 <b>Daily limit:</b> 2 videos per day by default. Use <code>/mylimit</code> to check your quota.\n\n"
+    "🚦 <b>Daily limit:</b> 2 videos per day by default. Use <code>/mylimit</code> to check your quota.\n"
+    "📜 <b>History:</b> Your recent successfully processed videos are saved automatically.\n\n"
     "🛠️ <b>Any Problem you can Report here :-</b> "
     '<a href="https://t.me/Dragonn_Exclusive">@Dragonn_Exclusive</a>'
 )
@@ -136,8 +138,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     ],
                     [
                         InlineKeyboardButton("🌐 Supported", callback_data="supported"),
-                        InlineKeyboardButton("🏠 Start", callback_data="start"),
+                        InlineKeyboardButton("📜 History", callback_data="history"),
                     ],
+                    [InlineKeyboardButton("🏠 Start", callback_data="start")],
                 ]
             ),
         )
@@ -274,6 +277,103 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+def _history_keyboard(rows) -> InlineKeyboardMarkup:
+    buttons: list[list[InlineKeyboardButton]] = []
+    for index, item in enumerate(rows, start=1):
+        names = item.get("file_names") or []
+        label = str(names[0]) if names else "Processed TeraBox file"
+        label = " ".join(label.split())
+        if len(label) > 28:
+            label = label[:27].rstrip() + "…"
+        buttons.append([
+            InlineKeyboardButton(
+                f"{index}️⃣ {label}",
+                callback_data=f"history_view:{item['id']}",
+            )
+        ])
+    buttons.append([
+        InlineKeyboardButton("🗑️ Clear History", callback_data="history_clear"),
+        InlineKeyboardButton("🏠 Start", callback_data="start"),
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _format_history_date(value: str) -> str:
+    try:
+        parsed = __import__("datetime").datetime.fromisoformat(value)
+        return parsed.strftime("%d %b %Y • %I:%M %p")
+    except Exception:
+        return value
+
+
+async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user_id = _user_id_from_update(update)
+    if message is None or user_id is None:
+        return
+
+    rows = get_history(user_id)
+    if not rows:
+        await message.reply_text(
+            "📜 <b>Your History</b>\n\n"
+            "No successfully processed videos are in your history yet.\n\n"
+            "Send a TeraBox link and it will appear here automatically.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Start", callback_data="start")]
+            ]),
+        )
+        return
+
+    lines = [
+        "📜 <b>Recent Video History</b>",
+        "",
+        "Your latest successfully processed TeraBox videos are saved here.",
+        "",
+    ]
+    for index, item in enumerate(rows, start=1):
+        names = item.get("file_names") or []
+        first_name = names[0] if names else "Processed file"
+        if len(names) > 1:
+            name_line = f"{first_name} + {len(names) - 1} more"
+        else:
+            name_line = first_name
+        lines.append(
+            f"{index}️⃣ <b>{escape(name_line[:110])}</b>\n"
+            f"   📦 {item['file_count']} file(s) • 🎬 {item['video_count']} video(s)\n"
+            f"   🕒 {escape(_format_history_date(item['created_at']))}"
+        )
+        if index < len(rows):
+            lines.append("")
+
+    lines.extend(["", "👇 <b>Tap an entry to view it or process it again.</b>"])
+    await message.reply_text(
+        "\n".join(lines),
+        parse_mode="HTML",
+        reply_markup=_history_keyboard(rows),
+    )
+
+
+async def clear_history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user_id = _user_id_from_update(update)
+    if message is None or user_id is None:
+        return
+    deleted = clear_history(user_id)
+    if deleted:
+        text = f"🗑️ <b>History cleared.</b>\n\nRemoved <b>{deleted}</b> saved entr{'y' if deleted == 1 else 'ies'}."
+    else:
+        text = "🗑️ <b>History is already empty.</b>"
+    await message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📜 History", callback_data="history")],
+            [InlineKeyboardButton("🏠 Start", callback_data="start")],
+        ]),
+    )
+
+
 async def process_url(
     message,
     context: ContextTypes.DEFAULT_TYPE,
@@ -330,6 +430,10 @@ async def process_url(
                     reply_markup=error_keyboard(),
                 )
                 return
+
+        caller_id_for_history = context.user_data.get("rate_limit_user_id")
+        if caller_id_for_history is not None and video_count > 0:
+            record_success(int(caller_id_for_history), url, result.files, video_count)
 
         # Phase 18: keep the single-file UI, but expose every file from a
         # folder/share through an interactive selector. The resolved data is
@@ -557,8 +661,9 @@ async def callback_handler(
                     ],
                     [
                         InlineKeyboardButton("🌐 Supported", callback_data="supported"),
-                        InlineKeyboardButton("🏠 Start", callback_data="start"),
+                        InlineKeyboardButton("📜 History", callback_data="history"),
                     ],
+                    [InlineKeyboardButton("🏠 Start", callback_data="start")],
                 ]
             ),
         )
@@ -585,6 +690,149 @@ async def callback_handler(
             _session_status_text(),
             parse_mode="HTML",
             reply_markup=error_keyboard(),
+        )
+        return
+
+    if query.data == "history":
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        rows = get_history(user_id)
+        if not rows:
+            await query.message.edit_text(
+                "📜 <b>Your History</b>\n\n"
+                "No successfully processed videos are saved yet.",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🏠 Start", callback_data="start")]
+                ]),
+            )
+            return
+
+        lines = [
+            "📜 <b>Recent Video History</b>",
+            "",
+            "Tap an entry to view its saved link details.",
+            "",
+        ]
+        for index, item in enumerate(rows, start=1):
+            names = item.get("file_names") or []
+            first_name = names[0] if names else "Processed file"
+            name_line = f"{first_name} + {len(names) - 1} more" if len(names) > 1 else first_name
+            lines.append(
+                f"{index}️⃣ <b>{escape(name_line[:110])}</b>\n"
+                f"   🎬 {item['video_count']} video(s) • 🕒 {escape(_format_history_date(item['created_at']))}"
+            )
+            if index < len(rows):
+                lines.append("")
+        await query.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=_history_keyboard(rows),
+        )
+        return
+
+    if query.data and query.data.startswith("history_view:"):
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        try:
+            history_id = int(query.data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            await query.answer("Invalid history entry.", show_alert=True)
+            return
+
+        item = get_history_item(user_id, history_id)
+        if item is None:
+            await query.answer("This history entry is no longer available.", show_alert=True)
+            return
+
+        names = item.get("file_names") or []
+        lines = [
+            "📄 <b>History Entry</b>",
+            "",
+            f"🕒 <b>{escape(_format_history_date(item['created_at']))}</b>",
+            f"📦 Files: <b>{item['file_count']}</b>",
+            f"🎬 Videos: <b>{item['video_count']}</b>",
+            "",
+            "📁 <b>Files</b>",
+        ]
+        for index, name in enumerate(names[:10], start=1):
+            lines.append(f"{index}. {escape(str(name))}")
+        if len(names) > 10:
+            lines.append(f"… and {len(names) - 10} more")
+        lines.extend([
+            "",
+            "🔗 <b>Saved TeraBox link</b>",
+            f"<code>{escape(item['share_url'])}</code>",
+            "",
+            "Reprocessing this entry uses your normal daily video quota.",
+        ])
+        await query.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Process Again", callback_data=f"history_process:{item['id']}")],
+                [InlineKeyboardButton("📜 Back to History", callback_data="history")],
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+            ]),
+        )
+        return
+
+    if query.data and query.data.startswith("history_process:"):
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        try:
+            history_id = int(query.data.split(":", 1)[1])
+        except (TypeError, ValueError):
+            await query.answer("Invalid history entry.", show_alert=True)
+            return
+
+        item = get_history_item(user_id, history_id)
+        if item is None:
+            await query.answer("This history entry is no longer available.", show_alert=True)
+            return
+
+        context.user_data["rate_limit_user_id"] = user_id
+        await process_url(query.message, context, item["share_url"])
+        return
+
+    if query.data == "history_clear":
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        rows = get_history(user_id)
+        if not rows:
+            await query.answer("History is already empty.", show_alert=True)
+            return
+        await query.message.edit_text(
+            "🗑️ <b>Clear History?</b>\n\n"
+            f"This will remove all <b>{len(rows)}</b> saved history entries.\n"
+            "Your TeraBox files and account are not affected.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Yes, Clear", callback_data="history_clear_confirm"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="history"),
+                ]
+            ]),
+        )
+        return
+
+    if query.data == "history_clear_confirm":
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        deleted = clear_history(user_id)
+        await query.message.edit_text(
+            "🗑️ <b>History Cleared</b>\n\n"
+            f"Removed <b>{deleted}</b> saved entr{'y' if deleted == 1 else 'ies'}.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📜 History", callback_data="history")],
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+            ]),
         )
         return
 
@@ -788,6 +1036,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
+    application.add_handler(CommandHandler("history", history_command))
+    application.add_handler(CommandHandler("clearhistory", clear_history_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

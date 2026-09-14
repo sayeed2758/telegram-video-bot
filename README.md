@@ -135,3 +135,7 @@ user-provided claim can activate a plan automatically.
 backup/recovery tools, QA tools, and the existing `data/` directory contents.
 
 No new Python dependencies were added.
+
+
+## Phase 41 — Manual Subscription Activation
+Payment gateway integration is intentionally not included. The admin manually verifies a purchase and uses `/setplan USER_ID pro` or `/setplan USER_ID unlimited`. The bot activates a 30-day subscription, sends the user an automatic confirmation showing start and expiry times, and automatically sends an expiry notification when the subscription expires. `/expire USER_ID` manually expires a subscription. `/subscriptions` shows admin subscription management help.

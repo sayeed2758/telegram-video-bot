@@ -13,7 +13,13 @@ from telegram.ext import (
     filters,
 )
 
-from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
+from bot.config import (
+    MAX_LINKS_PER_MESSAGE,
+    MAX_MESSAGE_LENGTH,
+    TERABOX_API_KEY,
+    TERABOX_COOKIE,
+    TERABOX_NDUS,
+)
 from bot.cache import cache_key, get_or_resolve
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
@@ -33,6 +39,7 @@ from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_i
 from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
 from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, mark_inactive, register_user
+from bot.security import validate_incoming_text
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -1013,6 +1020,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     register_user(update.effective_user)
 
+    valid_text, text_or_reason = validate_incoming_text(message.text, MAX_MESSAGE_LENGTH)
+    if not valid_text:
+        if text_or_reason == "too_long":
+            await message.reply_text(
+                "⚠️ <b>Message is too long.</b>\n\n"
+                f"Please send a message shorter than {MAX_MESSAGE_LENGTH} characters.",
+                parse_mode="HTML",
+            )
+        return
+
     # Phase 28: admin broadcast draft input. This check must run before normal
     # TeraBox-link handling so the draft is treated as a message, not a URL.
     if context.user_data.get("awaiting_broadcast"):
@@ -1082,9 +1099,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Phase 30.1: one Telegram message may contain multiple TeraBox links.
     # Process every unique link instead of silently taking only the first one.
-    urls = extract_urls(message.text)
+    urls = extract_urls(text_or_reason)
 
     if urls:
+        if len(urls) > MAX_LINKS_PER_MESSAGE:
+            await message.reply_text(
+                f"⚠️ <b>Too many links in one message.</b>\n\n"
+                f"Please send at most {MAX_LINKS_PER_MESSAGE} TeraBox links at a time.",
+                parse_mode="HTML",
+                reply_markup=welcome_keyboard(),
+            )
+            return
+
         context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
 
         if len(urls) > 1:
@@ -1582,7 +1608,21 @@ async def callback_handler(
         await process_url(query.message, context, last_url, password=context.user_data.get("last_password"))
 
 
+async def telegram_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle expected Telegram API errors quietly and safely."""
+    error = context.error
+    if isinstance(error, (BadRequest, Forbidden, RetryAfter)):
+        return
+
+    import logging
+    logging.getLogger(__name__).error(
+        "Unhandled Telegram update error: %s",
+        error.__class__.__name__ if error else "UnknownError",
+    )
+
+
 def register_handlers(application: Application) -> None:
+    application.add_error_handler(telegram_error_handler)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("session", session_command))

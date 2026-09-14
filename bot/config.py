@@ -35,6 +35,20 @@ TERABOX_API_URL = os.getenv(
 DEFAULT_DAILY_VIDEO_LIMIT = int(os.getenv("DEFAULT_DAILY_VIDEO_LIMIT", "2").strip() or "2")
 RATE_LIMIT_TIMEZONE = os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata"
 
+# Phase 33: optional production hardening.
+WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
+
+try:
+    MAX_MESSAGE_LENGTH = max(1000, min(int(os.getenv("MAX_MESSAGE_LENGTH", "12000").strip()), 50000))
+except ValueError:
+    MAX_MESSAGE_LENGTH = 12000
+
+try:
+    MAX_LINKS_PER_MESSAGE = max(1, min(int(os.getenv("MAX_LINKS_PER_MESSAGE", "10").strip()), 25))
+except ValueError:
+    MAX_LINKS_PER_MESSAGE = 10
+
+
 TERABOX_PUBLIC_GATEWAYS = tuple(
     item.strip().rstrip("/")
     for item in os.getenv("TERABOX_PUBLIC_GATEWAYS", "").split(",")

@@ -14,6 +14,7 @@ from telegram.ext import (
 )
 
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
+from bot.cache import cache_key, get_or_resolve
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
 from bot.history import clear_history, get_history, get_history_item, record_success
@@ -774,8 +775,12 @@ async def process_url(
         except Exception:
             pass
 
+    cache_hit = False
     try:
-        result = await resolve_link(url, password=password)
+        result, cache_hit = await get_or_resolve(
+            cache_key(url, password),
+            lambda: resolve_link(url, password=password),
+        )
     finally:
         await RESOLVE_QUEUE.release(queue_ticket)
 
@@ -815,6 +820,14 @@ async def process_url(
                 video_count=video_count,
                 file_count=len(result.files),
             )
+            if cache_hit:
+                record_event(
+                    int(caller_id_for_history),
+                    "processing_cache_hit",
+                    duration_ms=duration_ms,
+                    video_count=video_count,
+                    file_count=len(result.files),
+                )
             for resolved_file in result.files:
                 quality = str(resolved_file.quality or "").strip()
                 if quality:
@@ -847,7 +860,7 @@ async def process_url(
             lines = [
                 "✅ <b>Ready!</b>",
                 "",
-                "⚡ <b>Processed via PlayTeraBox</b>",
+                "⚡ <b>Processed via PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
                 "",
                 f"📦 <b>{len(result.files)} file(s) found</b>",
                 "",
@@ -880,7 +893,7 @@ async def process_url(
         lines = [
             "✅ <b>Ready!</b>",
             "",
-            "⚡ <b>Processed via PlayTeraBox</b>",
+            "⚡ <b>Processed via PlayTeraBox</b>" + (" • ⚡ Cached" if cache_hit else ""),
             "",
             f"📦 <b>{len(result.files)} file(s) found</b>",
             "",

@@ -43,6 +43,9 @@ class ResolvedFile:
     name: str
     size: str
     thumbnail: str | None = None
+    file_type: str | None = None
+    duration: str | None = None
+    quality: str | None = None
     direct_url: str | None = None
     stream_url: str | None = None
     quality_urls: dict[str, str] | None = None
@@ -241,6 +244,9 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
         name=str(name),
         size=_format_size(item.get("size") or item.get("file_size")),
         thumbnail=thumb if isinstance(thumb, str) else None,
+        file_type=str(item.get("type")).strip() if item.get("type") is not None else None,
+        duration=str(item.get("duration")).strip() if item.get("duration") is not None else None,
+        quality=str(item.get("quality")).strip() if item.get("quality") is not None else None,
         direct_url=direct if isinstance(direct, str) else None,
         stream_url=stream if isinstance(stream, str) else None,
         quality_urls=quality_urls or None,

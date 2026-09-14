@@ -169,6 +169,10 @@ async def process_url(
             {
                 "name": item.name,
                 "size": item.size,
+                "thumbnail": item.thumbnail,
+                "file_type": item.file_type,
+                "duration": item.duration,
+                "quality": item.quality,
                 "direct_url": item.direct_url,
                 "stream_url": item.stream_url,
                 "quality_urls": item.quality_urls or {},
@@ -222,6 +226,14 @@ async def process_url(
         if first_file:
             lines.append(f"🎬 <b>1. {escape(str(first_file.name))}</b>")
             lines.append(f"💾 Size: {escape(str(first_file.size))}")
+            if first_file.file_type:
+                lines.append(f"📁 Type: {escape(str(first_file.file_type))}")
+            if first_file.duration:
+                lines.append(f"⏱️ Duration: {escape(str(first_file.duration))}")
+            if first_file.quality:
+                lines.append(f"📺 Quality: {escape(str(first_file.quality))}")
+            if first_file.thumbnail:
+                lines.append("🖼️ Thumbnail available")
             if first_file.stream_url:
                 lines.append("▶️ Video playback available")
             if first_file.quality_urls and len(first_file.quality_urls) >= 2:
@@ -243,15 +255,36 @@ async def process_url(
                 "No playable/download URL was returned for this result."
             )
 
-        await status.edit_text(
-            "\n".join(lines),
-            parse_mode="HTML",
-            reply_markup=file_keyboard(
-                first_direct_url,
-                first_stream_url,
-                first_file.quality_urls if first_file else None,
-            ),
+        markup = file_keyboard(
+            first_direct_url,
+            first_stream_url,
+            first_file.quality_urls if first_file else None,
         )
+
+        if first_file and first_file.thumbnail:
+            try:
+                await status.delete()
+            except Exception:
+                pass
+            try:
+                await message.reply_photo(
+                    photo=first_file.thumbnail,
+                    caption="\n".join(lines),
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+            except Exception:
+                await message.reply_text(
+                    "\n".join(lines),
+                    parse_mode="HTML",
+                    reply_markup=markup,
+                )
+        else:
+            await status.edit_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=markup,
+            )
         return
 
     reason = result.message
@@ -423,6 +456,14 @@ async def callback_handler(
             f"🎬 <b>{index + 1}. {name}</b>",
             f"💾 Size: {size}",
         ]
+        if item.get("file_type"):
+            lines.append(f"📁 Type: {escape(str(item.get('file_type')))}")
+        if item.get("duration"):
+            lines.append(f"⏱️ Duration: {escape(str(item.get('duration')))}")
+        if item.get("quality"):
+            lines.append(f"📺 Quality: {escape(str(item.get('quality')))}")
+        if item.get("thumbnail"):
+            lines.append("🖼️ Thumbnail available")
         if stream_url:
             lines.append("▶️ Video playback available")
         if isinstance(quality_urls, dict) and len(quality_urls) >= 2:
@@ -500,6 +541,14 @@ async def callback_handler(
             f"🎬 <b>{index + 1}. {name}</b>",
             f"💾 Size: {size}",
         ]
+        if item.get("file_type"):
+            lines.append(f"📁 Type: {escape(str(item.get('file_type')))}")
+        if item.get("duration"):
+            lines.append(f"⏱️ Duration: {escape(str(item.get('duration')))}")
+        if item.get("quality"):
+            lines.append(f"📺 Quality: {escape(str(item.get('quality')))}")
+        if item.get("thumbnail"):
+            lines.append("🖼️ Thumbnail available")
         if stream_url:
             lines.append("▶️ Video playback available")
         if isinstance(quality_urls, dict) and len(quality_urls) >= 2:

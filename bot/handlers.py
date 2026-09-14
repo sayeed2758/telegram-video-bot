@@ -25,7 +25,7 @@ from bot.keyboards import (
     quality_keyboard,
     welcome_keyboard,
 )
-from bot.platforms import TERABOX_HOSTS, extract_url
+from bot.platforms import TERABOX_HOSTS, extract_url, extract_urls
 from bot.profile import build_profile_text
 from bot.queue_manager import RESOLVE_QUEUE
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit

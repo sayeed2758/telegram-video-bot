@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from bot.subscription import purge_expired_subscriptions
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 HISTORY_DB = Path(os.getenv("HISTORY_DB_PATH", str(DATA_DIR / "history.sqlite3")))
@@ -50,6 +52,10 @@ async def cleanup_loop(stop_event) -> None:
     while not stop_event.is_set():
         try:
             purge_expired_history()
+        except Exception:
+            pass
+        try:
+            purge_expired_subscriptions()
         except Exception:
             pass
         try:

@@ -46,6 +46,17 @@ def _connect() -> sqlite3.Connection:
 
 
 def _configured_limit(connection: sqlite3.Connection, user_id: int) -> int:
+    # Active premium subscriptions take priority over the normal/admin daily limit.
+    # Import lazily to avoid a module-import cycle.
+    try:
+        from bot.subscription import get_effective_limit
+        subscription_limit = get_effective_limit(user_id)
+        if subscription_limit is not None:
+            return int(subscription_limit)
+    except Exception:
+        # Subscription status must never break the core quota system.
+        pass
+
     row = connection.execute(
         "SELECT daily_limit FROM user_limits WHERE user_id = ?",
         (user_id,),

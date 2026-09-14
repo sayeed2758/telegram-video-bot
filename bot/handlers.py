@@ -24,6 +24,7 @@ from bot.config import (
 from bot.cache import cache_key, get_or_resolve
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
+from bot.subscription import build_subscription_text, get_active_subscription, PLANS
 from bot.history import clear_history, get_history, get_history_item, record_success
 from bot.keyboards import (
     error_keyboard,
@@ -58,7 +59,8 @@ HELP_TEXT = (
     "⚠️ Some TeraBox shares may require verification or a valid session.\n\n"
     "🚦 <b>Daily limit:</b> 2 videos per day by default. Use <code>/mylimit</code> to check your quota.\n"
     "📜 <b>History:</b> Your recent successfully processed videos are saved automatically.\n"
-    "👤 <b>Profile:</b> View your usage, daily quota, and processing statistics.\n\n"
+    "👤 <b>Profile:</b> View your usage, daily quota, and processing statistics.\n"
+    "💳 <b>Subscription:</b> Choose a premium plan and contact the owner to purchase it.\n\n"
     "🛠️ <b>Any Problem you can Report here :-</b> "
     '<a href="https://t.me/Dragonn_Exclusive">@Dragonn_Exclusive</a>'
 )
@@ -234,8 +236,22 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 InlineKeyboardButton("📜 History", callback_data="history"),
                 InlineKeyboardButton("🚦 My Limit", callback_data="mylimit"),
             ],
+            [InlineKeyboardButton("💳 Subscription", callback_data="subscription")],
             [InlineKeyboardButton("🏠 Start", callback_data="start")],
         ]),
+    )
+
+
+async def subscription_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    register_user(user)
+    await message.reply_text(
+        build_subscription_text(user),
+        parse_mode="HTML",
+        reply_markup=subscription_keyboard(user),
     )
 
 
@@ -1524,8 +1540,20 @@ async def callback_handler(
                     InlineKeyboardButton("📜 History", callback_data="history"),
                     InlineKeyboardButton("🚦 My Limit", callback_data="mylimit"),
                 ],
+                [InlineKeyboardButton("💳 Subscription", callback_data="subscription")],
                 [InlineKeyboardButton("🏠 Start", callback_data="start")],
             ]),
+        )
+        return
+
+    if query.data == "subscription":
+        user = update.effective_user
+        if user is None:
+            return
+        await query.message.edit_text(
+            build_subscription_text(user),
+            parse_mode="HTML",
+            reply_markup=subscription_keyboard(user),
         )
         return
 
@@ -1899,6 +1927,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("mylimit", mylimit_command))
     application.add_handler(CommandHandler("myid", myid_command))
     application.add_handler(CommandHandler("profile", profile_command))
+    application.add_handler(CommandHandler("subscription", subscription_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("finduser", find_user_command))

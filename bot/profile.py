@@ -8,6 +8,7 @@ from telegram import User
 
 from bot.history import get_history
 from bot.rate_limiter import get_lifetime_video_count, get_status
+from bot.subscription import get_active_subscription, PLANS
 
 
 def _display_name(user: User) -> str:
@@ -34,6 +35,12 @@ def build_profile_text(user: User | None) -> str:
     limit_text = "♾️ Unlimited" if limit < 0 else f"{limit} video(s)"
     remaining_text = "♾️ Unlimited" if limit < 0 else str(remaining)
     username = f"@{user.username}" if user.username else "Not set"
+    subscription = get_active_subscription(int(user.id))
+    if subscription:
+        plan = PLANS.get(str(subscription["plan_id"]), {})
+        subscription_line = f"🟢 <b>{escape(str(plan.get('name', subscription['plan_id'])))} active</b> • expires {escape(str(subscription['expires_at']).replace('T', ' '))}"
+    else:
+        subscription_line = "🆓 <b>FREE</b> plan"
 
     return (
         "👤 <b>My Profile</b>\n\n"
@@ -45,6 +52,7 @@ def build_profile_text(user: User | None) -> str:
         f"📜 <b>Saved history entries:</b> {len(history)}\n"
         f"📅 <b>Today's usage:</b> {used_today}\n"
         f"🎯 <b>Daily limit:</b> {limit_text}\n"
-        f"🟢 <b>Remaining today:</b> {remaining_text}\n\n"
+        f"🟢 <b>Remaining today:</b> {remaining_text}\n"
+        f"💳 <b>Subscription:</b> {subscription_line}\n\n"
         "💡 Your daily video quota resets automatically at midnight (India time)."
     )

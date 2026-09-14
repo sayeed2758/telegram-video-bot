@@ -67,3 +67,8 @@ try:
     MAX_RESOLVE_QUEUE_SIZE = max(1, min(int(os.getenv("MAX_RESOLVE_QUEUE_SIZE", "20").strip()), 100))
 except ValueError:
     MAX_RESOLVE_QUEUE_SIZE = 20
+
+# Phase 40: premium subscription purchase contact. Payment is handled manually
+# by the owner in the current release; no payment gateway is connected.
+SUBSCRIPTION_CONTACT_USERNAME = os.getenv("SUBSCRIPTION_CONTACT_USERNAME", "Dragonn_Exclusive").strip().lstrip("@")
+SUBSCRIPTION_DAYS = max(1, int(os.getenv("SUBSCRIPTION_DAYS", "30").strip() or "30"))

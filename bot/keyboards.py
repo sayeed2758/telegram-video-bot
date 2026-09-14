@@ -1,4 +1,6 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
+
+from bot.subscription import build_purchase_url
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
@@ -206,3 +208,14 @@ def selected_file_keyboard(
     )
 
     return InlineKeyboardMarkup(rows)
+
+
+def subscription_keyboard(user: User | None = None) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐ Purchase PRO • 50/day", url=build_purchase_url(user, "pro"))],
+        [InlineKeyboardButton("💎 Purchase UNLIMITED", url=build_purchase_url(user, "unlimited"))],
+        [
+            InlineKeyboardButton("👤 Profile", callback_data="profile"),
+            InlineKeyboardButton("🏠 Start", callback_data="start"),
+        ],
+    ])

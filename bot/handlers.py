@@ -153,30 +153,36 @@ async def process_url(
     result = await resolve_link(url, password=password)
 
     if result.ok:
-        lines = [
-            "✅ <b>Link processed successfully.</b>",
-            "",
-            f"📦 Files found: <b>{len(result.files)}</b>",
-            "",
-        ]
-
-        for index, item in enumerate(result.files, start=1):
-            lines.append(f"📄 <b>{index}. {item.name}</b>")
-            lines.append(f"💾 Size: {item.size}")
-            lines.append("")
-
-        # Phase 7 exposes a direct URL only when the resolver actually
-        # returned one. No guessed or fabricated links are created.
+        # Phase 16: present the resolved item like a compact professional
+        # result card while keeping the existing resolver/output untouched.
         first_file = result.files[0] if result.files else None
         first_direct_url = first_file.direct_url if first_file else None
         first_stream_url = first_file.stream_url if first_file else None
 
+        lines = [
+            "✅ <b>Ready!</b>",
+            "",
+            "⚡ <b>Processed via PlayTeraBox</b>",
+            "",
+            f"📦 <b>{len(result.files)} file(s) found</b>",
+            "",
+        ]
+
+        for index, item in enumerate(result.files, start=1):
+            lines.append(f"🎬 <b>{index}. {item.name}</b>")
+            lines.append(f"💾 Size: {item.size}")
+            if index == 1 and item.stream_url:
+                lines.append("▶️ Video playback available")
+            if index == 1 and item.direct_url:
+                lines.append("📥 Direct download available")
+            lines.append("")
+
         if first_direct_url or first_stream_url:
-            lines.append("🎬 <b>Your file is ready.</b>")
-            lines.append("Use the buttons below to open or download it.")
+            lines.append("👇 <b>Choose an action below</b>")
         else:
             lines.append(
-                "ℹ️ File metadata was found, but no direct file URL was returned yet."
+                "ℹ️ <b>File details found.</b>\n"
+                "No playable/download URL was returned for this result."
             )
 
         text = "\n".join(lines)

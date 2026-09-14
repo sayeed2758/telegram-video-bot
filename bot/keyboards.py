@@ -29,19 +29,21 @@ def error_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def file_keyboard(direct_url: str | None, stream_url: str | None = None) -> InlineKeyboardMarkup:
-    rows = []
+def file_keyboard(
+    direct_url: str | None,
+    stream_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+
+    # Phase 16: cleaner, action-first result UI.
+    if stream_url:
+        rows.append(
+            [InlineKeyboardButton("▶️ Play Video", url=stream_url)]
+        )
 
     if direct_url:
         rows.append(
-            [
-                InlineKeyboardButton("▶️ Play / Open", url=direct_url),
-                InlineKeyboardButton("📥 Download", url=direct_url),
-            ]
-        )
-    elif stream_url:
-        rows.append(
-            [InlineKeyboardButton("▶️ Play Video", url=stream_url)]
+            [InlineKeyboardButton("📥 Download", url=direct_url)]
         )
 
     rows.append(

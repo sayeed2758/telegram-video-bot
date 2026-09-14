@@ -1,8 +1,8 @@
-"""Phase 40 subscription foundation without payment-gateway integration.
+"""Phase 41 manual subscription management without payment-gateway integration.
 
-Paid plans are purchased by contacting the bot owner. The module tracks 30-day
-subscription records and automatically treats expired subscriptions as inactive.
-Future phases can activate records after a verified manual payment.
+Paid plans are purchased by contacting the bot owner. Admins manually activate
+verified purchases from Telegram; the bot calculates the exact 30-day validity,
+confirms activation to the user, and marks overdue subscriptions expired.
 """
 from __future__ import annotations
 
@@ -117,14 +117,40 @@ def activate_subscription(
     source: str = "manual",
     payment_id: str = "",
 ) -> dict[str, object]:
-    """Activate/renew a plan. Intended for a future verified admin/payment flow."""
+    """Activate or renew a subscription for a verified manual purchase.
+
+    A new activation starts immediately. When the same plan is already active,
+    the new 30-day period is added to the existing expiry so unused paid time is
+    not silently lost. Changing plan starts a fresh period from the activation
+    moment.
+    """
     plan = PLANS.get(plan_id)
     if plan is None:
         raise ValueError(f"Unknown plan: {plan_id}")
 
     now = _now()
-    expires = now + timedelta(days=int(plan["days"]))
     with _connect() as conn:
+        existing = conn.execute(
+            "SELECT * FROM subscriptions WHERE user_id=? AND status='active'",
+            (int(user_id),),
+        ).fetchone()
+
+        if existing and str(existing["plan_id"]) == plan_id:
+            try:
+                current_expiry = datetime.fromisoformat(str(existing["expires_at"]))
+                if current_expiry > now:
+                    started_at = str(existing["started_at"])
+                    expires = current_expiry + timedelta(days=int(plan["days"]))
+                else:
+                    started_at = now.isoformat()
+                    expires = now + timedelta(days=int(plan["days"]))
+            except ValueError:
+                started_at = now.isoformat()
+                expires = now + timedelta(days=int(plan["days"]))
+        else:
+            started_at = now.isoformat()
+            expires = now + timedelta(days=int(plan["days"]))
+
         conn.execute(
             """
             INSERT INTO subscriptions
@@ -144,7 +170,7 @@ def activate_subscription(
                 int(user_id),
                 plan_id,
                 int(plan["daily_limit"]),
-                now.isoformat(),
+                started_at,
                 expires.isoformat(),
                 source[:40],
                 payment_id[:255],
@@ -154,6 +180,41 @@ def activate_subscription(
         conn.commit()
     return get_subscription(user_id) or {}
 
+
+def build_activation_message(record: dict[str, object], renewed: bool = False) -> str:
+    """Create the user-facing purchase activation/renewal confirmation."""
+    plan_id = str(record.get("plan_id") or "pro")
+    plan = PLANS.get(plan_id, {})
+    limit = int(record.get("daily_limit", 0))
+    limit_text = "♾️ Unlimited" if limit < 0 else f"{limit} videos/day"
+    started = str(record.get("started_at") or "").replace("T", " ")
+    expires = str(record.get("expires_at") or "").replace("T", " ")
+    title = "Subscription Renewed" if renewed else "Subscription Activated"
+    verb = "renewed" if renewed else "successfully activated"
+    return (
+        f"🎉 <b>Thanks for purchasing {escape(str(plan.get('name', plan_id)))}!</b>\n\n"
+        f"✅ Your subscription has been <b>{verb}</b>.\n\n"
+        f"{plan.get('emoji', '💳')} <b>Plan:</b> {escape(str(plan.get('name', plan_id)))}\n"
+        f"🎯 <b>Daily Limit:</b> {escape(limit_text)}\n"
+        f"📅 <b>Valid From:</b> {escape(started)} (India time)\n"
+        f"⏳ <b>Valid Until:</b> {escape(expires)} (India time)\n"
+        "🟢 <b>Status:</b> ACTIVE\n\n"
+        "💙 Thank you for supporting Advance Tera Video Bot!\n"
+        "🚀 Enjoy your premium access."
+    )
+
+
+def build_expiry_message(record: dict[str, object]) -> str:
+    plan_id = str(record.get("plan_id") or "pro")
+    plan = PLANS.get(plan_id, {})
+    expired_at = str(record.get("expires_at") or "").replace("T", " ")
+    return (
+        "⏰ <b>Subscription Expired</b>\n\n"
+        f"{plan.get('emoji', '💳')} <b>Plan:</b> {escape(str(plan.get('name', plan_id)))}\n"
+        f"📅 <b>Expired:</b> {escape(expired_at)} (India time)\n\n"
+        "You are now back on the 🆓 <b>FREE</b> plan with the normal daily limit.\n\n"
+        "💳 Open <b>/subscription</b> to purchase again."
+    )
 
 def expire_subscription(user_id: int) -> bool:
     now = _now().isoformat()
@@ -166,16 +227,29 @@ def expire_subscription(user_id: int) -> bool:
     return cursor.rowcount > 0
 
 
-def purge_expired_subscriptions() -> int:
-    """Mark every past-due active record as expired."""
+def expire_due_subscriptions() -> list[dict[str, object]]:
+    """Mark overdue subscriptions expired and return the records just expired."""
     now = _now().isoformat()
+    expired: list[dict[str, object]] = []
     with _connect() as conn:
-        cursor = conn.execute(
-            "UPDATE subscriptions SET status='expired', updated_at=? WHERE status='active' AND expires_at <= ?",
-            (now, now),
-        )
+        rows = conn.execute(
+            "SELECT * FROM subscriptions WHERE status='active' AND expires_at <= ?",
+            (now,),
+        ).fetchall()
+        for row in rows:
+            record = dict(row)
+            conn.execute(
+                "UPDATE subscriptions SET status='expired', updated_at=? WHERE user_id=? AND status='active'",
+                (now, int(record["user_id"])),
+            )
+            expired.append(record)
         conn.commit()
-    return int(cursor.rowcount or 0)
+    return expired
+
+
+def purge_expired_subscriptions() -> int:
+    """Compatibility helper: expire overdue records and return the count."""
+    return len(expire_due_subscriptions())
 
 
 def build_purchase_url(user: User | None, plan_id: str) -> str:

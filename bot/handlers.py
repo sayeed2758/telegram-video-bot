@@ -24,7 +24,16 @@ from bot.config import (
 from bot.cache import cache_key, get_or_resolve
 from bot.error_messages import classify_resolver_error
 from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
-from bot.subscription import build_subscription_text, get_active_subscription, PLANS
+from bot.subscription import (
+    build_activation_message,
+    build_expiry_message,
+    build_subscription_text,
+    expire_due_subscriptions,
+    get_active_subscription,
+    PLANS,
+    activate_subscription,
+    expire_subscription,
+)
 from bot.history import clear_history, get_history, get_history_item, record_success
 from bot.keyboards import (
     error_keyboard,
@@ -341,6 +350,136 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+async def admin_setplan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None:
+        return
+    register_user(actor)
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    if len(context.args) not in {2, 3}:
+        await message.reply_text(
+            "Usage:\n<code>/setplan USER_ID PLAN</code>\n\n"
+            "Plans: <code>pro</code> or <code>unlimited</code>.\n"
+            "Optional payment/reference ID can be supplied as a third argument.",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("⚠️ USER_ID must be a number.")
+        return
+    plan_id = context.args[1].strip().lower()
+    if plan_id not in PLANS:
+        await message.reply_text("⚠️ Unknown plan. Use <code>pro</code> or <code>unlimited</code>.", parse_mode="HTML")
+        return
+    reference = context.args[2].strip() if len(context.args) == 3 else ""
+    previous = get_active_subscription(target_id)
+    renewed = bool(previous and str(previous.get("plan_id")) == plan_id)
+    record = activate_subscription(target_id, plan_id, source="admin_manual", payment_id=reference)
+
+    delivery = ""
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=build_activation_message(record, renewed=renewed),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 My Subscription", callback_data="subscription")],
+                [InlineKeyboardButton("👤 Profile", callback_data="profile")],
+            ]),
+        )
+        delivery = "\n📨 Confirmation sent to the user."
+    except Forbidden:
+        delivery = "\n⚠️ Subscription activated, but Telegram could not deliver the confirmation (user may have blocked the bot)."
+    except BadRequest:
+        delivery = "\n⚠️ Subscription activated, but the confirmation message could not be delivered."
+    except Exception:
+        delivery = "\n⚠️ Subscription activated, but the confirmation message could not be delivered."
+
+    plan = PLANS[plan_id]
+    await message.reply_text(
+        "✅ <b>Subscription activated</b>\n\n"
+        f"👤 User: <code>{target_id}</code>\n"
+        f"{plan['emoji']} Plan: <b>{escape(str(plan['name']))}</b>\n"
+        f"📅 From: <b>{escape(str(record['started_at']).replace('T', ' '))}</b>\n"
+        f"⏳ Until: <b>{escape(str(record['expires_at']).replace('T', ' '))}</b>\n"
+        f"🎯 Limit: <b>{'♾️ Unlimited' if int(record['daily_limit']) < 0 else str(record['daily_limit']) + ' videos/day'}</b>"
+        f"{delivery}",
+        parse_mode="HTML",
+    )
+
+
+async def admin_expire_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None:
+        return
+    register_user(actor)
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    if len(context.args) != 1:
+        await message.reply_text("Usage:\n<code>/expire USER_ID</code>", parse_mode="HTML")
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("⚠️ USER_ID must be a number.")
+        return
+    record = get_active_subscription(target_id)
+    if not record:
+        await message.reply_text("ℹ️ This user does not have an active premium subscription.")
+        return
+    changed = expire_subscription(target_id)
+    if not changed:
+        await message.reply_text("ℹ️ The subscription was already inactive.")
+        return
+    try:
+        await context.bot.send_message(
+            chat_id=target_id,
+            text=build_expiry_message(record),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Renew Subscription", callback_data="subscription")],
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+            ]),
+        )
+    except Exception:
+        pass
+    await message.reply_text(
+        f"✅ <b>Subscription expired</b> for <code>{target_id}</code>.",
+        parse_mode="HTML",
+    )
+
+
+async def admin_subscription_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None:
+        return
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    lines = [
+        "💳 <b>Subscription Management</b>",
+        "",
+        "⭐ <b>PRO</b> — 50 videos/day • 30 days",
+        "💎 <b>UNLIMITED</b> — Unlimited • 30 days",
+        "",
+        "Use:",
+        "<code>/setplan USER_ID pro</code>",
+        "<code>/setplan USER_ID unlimited</code>",
+        "<code>/expire USER_ID</code>",
+        "",
+        "After activation the user automatically receives a confirmation with start and expiry time.",
+    ]
+    await message.reply_text("\n".join(lines), parse_mode="HTML")
+
+
 def _format_duration_ms(value: int) -> str:
     seconds = max(0, int(value)) / 1000.0
     if seconds < 1:
@@ -501,7 +640,7 @@ def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
         [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
-        [InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],
+        [InlineKeyboardButton("💳 Subscriptions", callback_data="admin_subscriptions"), InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],
         [InlineKeyboardButton("🩺 System Status", callback_data="admin_status"), InlineKeyboardButton("🛠️ Maintenance", callback_data="admin_maintenance")],
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
@@ -1415,13 +1554,26 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_analytics":
             await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
+        if query.data == "admin_subscriptions":
+            await query.message.edit_text(
+                "💳 <b>Subscription Management</b>\n\n"
+                "⭐ <b>PRO</b> — 50 videos/day • 30 days\n"
+                "💎 <b>UNLIMITED</b> — Unlimited • 30 days\n\n"
+                "<b>Activate:</b> <code>/setplan USER_ID pro</code>\n"
+                "<code>/setplan USER_ID unlimited</code>\n\n"
+                "<b>Manual expire:</b> <code>/expire USER_ID</code>\n\n"
+                "The user receives an automatic confirmation with the exact start and expiry time.",
+                parse_mode="HTML",
+                reply_markup=_admin_dashboard_keyboard(),
+            )
+            return
         if query.data == "admin_queue":
             await query.message.edit_text(_admin_queue_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_status":
@@ -1929,6 +2081,9 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("myid", myid_command))
     application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
+    application.add_handler(CommandHandler("subscriptions", admin_subscription_command))
+    application.add_handler(CommandHandler("setplan", admin_setplan_command))
+    application.add_handler(CommandHandler("expire", admin_expire_command))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("finduser", find_user_command))

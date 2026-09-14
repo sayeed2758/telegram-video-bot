@@ -1,4 +1,4 @@
-"""Phase 39: automatic one-hour cleanup for transient history data."""
+"""Phase 41: automatic one-hour history cleanup plus subscription expiry notifications."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from bot.subscription import purge_expired_subscriptions
+from bot.subscription import build_expiry_message, expire_due_subscriptions
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -45,7 +45,7 @@ def purge_expired_history() -> int:
         return 0
 
 
-async def cleanup_loop(stop_event) -> None:
+async def cleanup_loop(stop_event, bot=None) -> None:
     """Run cleanup approximately once per hour until asked to stop."""
     import asyncio
 
@@ -55,7 +55,18 @@ async def cleanup_loop(stop_event) -> None:
         except Exception:
             pass
         try:
-            purge_expired_subscriptions()
+            expired = expire_due_subscriptions()
+            if bot is not None:
+                for record in expired:
+                    try:
+                        await bot.send_message(
+                            chat_id=int(record["user_id"]),
+                            text=build_expiry_message(record),
+                            parse_mode="HTML",
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
         except Exception:
             pass
         try:

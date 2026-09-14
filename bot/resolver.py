@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
 
@@ -18,6 +19,11 @@ from bot.config import (
 )
 
 logger = logging.getLogger(__name__)
+# Never print request URLs because the PlayTeraBox API key is carried in the
+# documented `secret` query parameter.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+_PLAYTERABOX_RATE_LIMIT_UNTIL = 0.0
 
 TIMEOUT = httpx.Timeout(5.0, connect=3.0)
 
@@ -293,6 +299,20 @@ async def _playterabox_api_resolve(
         )
 
     logger.info("PlayTeraBox API GET /api/proxy -> HTTP %s", response.status_code)
+
+    if response.status_code == 429:
+        retry_after = response.headers.get("Retry-After", "")
+        try:
+            wait_seconds = max(1, int(float(retry_after)))
+        except (TypeError, ValueError):
+            wait_seconds = 60
+        global _PLAYTERABOX_RATE_LIMIT_UNTIL
+        _PLAYTERABOX_RATE_LIMIT_UNTIL = time.monotonic() + wait_seconds
+        return ResolveResult(
+            False,
+            [],
+            f"PlayTeraBox API is rate-limiting requests. Please wait about {wait_seconds} seconds and try again.",
+        )
 
     try:
         payload = response.json()
@@ -657,9 +677,10 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
     """Resolve a TeraBox share without long anonymous fallback chains.
 
     Phase 13 intentionally keeps the path small and predictable:
-    1) owner-configured gateway/proxy (if explicitly enabled)
-    2) native TeraBox request
-    3) return immediately on verification/password/session errors
+    1) PlayTeraBox API Pro when configured
+    2) optional owner-controlled gateway/proxy
+    3) native TeraBox request
+    4) return immediately on provider rate-limit/verification/password errors
 
     Public third-party fallbacks are disabled here because repeated failing
     external requests were leaving Telegram users stuck on Processing.
@@ -675,12 +696,23 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
     ) as client:
         # 1. PlayTeraBox API Pro (owner subscription).
         if TERABOX_API_KEY:
+            if time.monotonic() < _PLAYTERABOX_RATE_LIMIT_UNTIL:
+                remaining = max(1, int(_PLAYTERABOX_RATE_LIMIT_UNTIL - time.monotonic()))
+                return ResolveResult(
+                    False,
+                    [],
+                    f"PlayTeraBox API is rate-limiting requests. Please wait about {remaining} seconds and try again.",
+                )
+
             api_result = await _playterabox_api_resolve(client, url)
             if api_result.ok:
                 return api_result
+            # Never fall through to native TeraBox after a provider 429.
+            # Doing so only produces the misleading `need verify` message and
+            # encourages users to repeat calls while the paid API is cooling down.
+            if "rate-limiting requests" in api_result.message.lower():
+                return api_result
             # A configured API is the authoritative paid route for this phase.
-            # For auth/subscription failures, return immediately instead of
-            # silently spending time on unrelated fallback services.
             if any(token in api_result.message.lower() for token in (
                 "api key",
                 "wallet balance",

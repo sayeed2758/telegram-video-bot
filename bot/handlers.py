@@ -13,6 +13,7 @@ from telegram.ext import (
 
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
 from bot.error_messages import classify_resolver_error
+from bot.rate_limiter import count_video_files, get_status, is_admin, reset_limit, set_limit, try_consume
 from bot.keyboards import (
     error_keyboard,
     file_keyboard,
@@ -36,6 +37,7 @@ HELP_TEXT = (
     "2️⃣ I will detect and process the link.\n"
     "3️⃣ If the share can be resolved, its file details will be shown.\n\n"
     "⚠️ Some TeraBox shares may require verification or a valid session.\n\n"
+    "🚦 <b>Daily limit:</b> 2 videos per day by default. Use <code>/mylimit</code> to check your quota.\n\n"
     "🛠️ <b>Any Problem you can Report here :-</b> "
     '<a href="https://t.me/Dragonn_Exclusive">@Dragonn_Exclusive</a>'
 )
@@ -141,6 +143,137 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
 
+
+def _user_id_from_update(update: Update) -> int | None:
+    user = update.effective_user
+    return int(user.id) if user is not None else None
+
+
+def _format_limit_status(status: dict[str, int | str]) -> str:
+    limit = int(status["limit"])
+    used = int(status["used"])
+    if limit < 0:
+        limit_text = "♾️ Unlimited"
+        remaining_text = "♾️"
+    else:
+        limit_text = str(limit)
+        remaining_text = str(status["remaining"])
+    return (
+        "🚦 <b>Daily Video Limit</b>\n\n"
+        f"📅 Date: <b>{status['date']}</b>\n"
+        f"🎬 Used: <b>{used}</b>\n"
+        f"🎯 Limit: <b>{limit_text}</b> videos\n"
+        f"🟢 Remaining: <b>{remaining_text}</b>"
+    )
+
+
+async def mylimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user_id = _user_id_from_update(update)
+    if message is None or user_id is None:
+        return
+    await message.reply_text(
+        _format_limit_status(get_status(user_id)) +
+        "\n\nℹ️ Your quota resets automatically at midnight (India time).",
+        parse_mode="HTML",
+    )
+
+
+async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    await message.reply_text(
+        f"🆔 <b>Your Telegram User ID</b>\n\n<code>{user.id}</code>",
+        parse_mode="HTML",
+    )
+
+
+async def admin_setlimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    if not is_admin(user.id):
+        await message.reply_text("🚫 You are not authorized to use this command.")
+        return
+    if len(context.args) != 2:
+        await message.reply_text(
+            "Usage:\n<code>/setlimit USER_ID LIMIT</code>\n\n"
+            "LIMIT: -1 = unlimited, 0 = blocked, positive number = videos/day.",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        target_id = int(context.args[0])
+        limit = int(context.args[1])
+    except ValueError:
+        await message.reply_text("⚠️ USER_ID and LIMIT must be numbers.")
+        return
+    if limit < -1:
+        await message.reply_text("⚠️ LIMIT must be -1, 0, or a positive integer.")
+        return
+    set_limit(target_id, limit)
+    status = get_status(target_id)
+    await message.reply_text(
+        "✅ <b>User limit updated.</b>\n\n"
+        f"👤 User: <code>{target_id}</code>\n"
+        + _format_limit_status(status),
+        parse_mode="HTML",
+    )
+
+
+async def admin_limit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    if len(context.args) > 1:
+        if not is_admin(user.id):
+            await message.reply_text("🚫 You are not authorized to inspect another user's limit.")
+            return
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await message.reply_text("⚠️ USER_ID must be a number.")
+            return
+    else:
+        target_id = user.id
+    if len(context.args) == 1 and not is_admin(user.id):
+        await message.reply_text("🚫 You are not authorized to inspect another user's limit.")
+        return
+    await message.reply_text(_format_limit_status(get_status(target_id)), parse_mode="HTML")
+
+
+async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    if not is_admin(user.id):
+        await message.reply_text("🚫 You are not authorized to use this command.")
+        return
+    if len(context.args) != 1:
+        await message.reply_text(
+            "Usage:\n<code>/resetlimit USER_ID</code>",
+            parse_mode="HTML",
+        )
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("⚠️ USER_ID must be a number.")
+        return
+    reset_limit(target_id)
+    await message.reply_text(
+        "✅ <b>User limit reset.</b>\n\n"
+        f"👤 User: <code>{target_id}</code>\n"
+        "The default daily limit is active again.",
+        parse_mode="HTML",
+    )
+
+
 async def process_url(
     message,
     context: ContextTypes.DEFAULT_TYPE,
@@ -153,6 +286,26 @@ async def process_url(
     else:
         context.user_data["last_password"] = password
 
+    user = context._user if hasattr(context, "_user") else None
+    # python-telegram-bot contexts do not expose effective_user directly; the
+    # handler stores the caller id before entering this function.
+    caller_id = context.user_data.get("rate_limit_user_id")
+    if caller_id is not None:
+        status_info = get_status(int(caller_id))
+        limit = int(status_info["limit"])
+        remaining = int(status_info["remaining"])
+        if limit >= 0 and remaining <= 0:
+            await message.reply_text(
+                "🚦 <b>Daily Video Limit Reached</b>\n\n"
+                "You have used all your allowed videos for today.\n\n"
+                f"🎯 Daily limit: <b>{limit}</b>\n"
+                "🔄 Your quota resets automatically at midnight (India time).\n\n"
+                "Use <code>/mylimit</code> to check your current quota.",
+                parse_mode="HTML",
+                reply_markup=error_keyboard(),
+            )
+            return
+
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
         "⏳ Checking the TeraBox share...",
@@ -162,6 +315,22 @@ async def process_url(
     result = await resolve_link(url, password=password)
 
     if result.ok:
+        video_count = count_video_files(result.files)
+        caller_id = context.user_data.get("rate_limit_user_id")
+        if caller_id is not None and video_count > 0:
+            caller_id_int = int(caller_id)
+            if not try_consume(caller_id_int, video_count):
+                quota = get_status(caller_id_int)
+                remaining = quota["remaining"]
+                await status.edit_text(
+                    "🚦 <b>Daily Video Limit Reached</b>\n\n"
+                    f"This link contains <b>{video_count}</b> video file(s), but your remaining quota is <b>{remaining}</b>.\n\n"
+                    "Please try again after your quota resets, or contact the bot owner if you need a higher limit.",
+                    parse_mode="HTML",
+                    reply_markup=error_keyboard(),
+                )
+                return
+
         # Phase 18: keep the single-file UI, but expose every file from a
         # folder/share through an interactive selector. The resolved data is
         # stored only for the current user/session; URLs are never placed in
@@ -345,12 +514,14 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
+        context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
         await process_url(message, context, last_url, password=password)
         return
 
     url = extract_url(message.text)
 
     if url:
+        context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
         await process_url(message, context, url)
         return
 
@@ -604,6 +775,7 @@ async def callback_handler(
             )
             return
 
+        context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
         await process_url(query.message, context, last_url, password=context.user_data.get("last_password"))
 
 
@@ -611,6 +783,11 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("session", session_command))
+    application.add_handler(CommandHandler("mylimit", mylimit_command))
+    application.add_handler(CommandHandler("myid", myid_command))
+    application.add_handler(CommandHandler("limit", admin_limit_command))
+    application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
+    application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

@@ -32,6 +32,9 @@ TERABOX_API_URL = os.getenv(
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.
+DEFAULT_DAILY_VIDEO_LIMIT = int(os.getenv("DEFAULT_DAILY_VIDEO_LIMIT", "2").strip() or "2")
+RATE_LIMIT_TIMEZONE = os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata"
+
 TERABOX_PUBLIC_GATEWAYS = tuple(
     item.strip().rstrip("/")
     for item in os.getenv("TERABOX_PUBLIC_GATEWAYS", "").split(",")

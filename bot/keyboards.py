@@ -37,19 +37,48 @@ def _quality_order(quality_urls: dict[str, str]) -> list[str]:
 
 
 def quality_keyboard(quality_urls: dict[str, str]) -> InlineKeyboardMarkup:
-    """Create a quality selector using direct URL buttons from the API response."""
+    """Create a quality selector from the PlayTeraBox quality map."""
     rows: list[list[InlineKeyboardButton]] = []
     ordered = _quality_order(quality_urls)
 
     for quality in ordered:
         url = quality_urls.get(quality)
         if isinstance(url, str) and url.strip():
-            rows.append(
-                [InlineKeyboardButton(f"📺 {quality}", url=url.strip())]
-            )
+            rows.append([
+                InlineKeyboardButton(f"📺 {quality} • Play", url=url.strip())
+            ])
 
-    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="quality_back")])
+    rows.append([InlineKeyboardButton("⬅️ Back to Video", callback_data="quality_back")])
     return InlineKeyboardMarkup(rows)
+
+
+def _best_quality(quality_urls: dict[str, str] | None) -> tuple[str | None, str | None]:
+    """Return the highest-priority available quality and its URL."""
+    if not isinstance(quality_urls, dict):
+        return None, None
+
+    for quality in ("1080p", "720p", "480p", "360p"):
+        url = quality_urls.get(quality)
+        if isinstance(url, str) and url.strip():
+            return quality, url.strip()
+
+    for quality, url in quality_urls.items():
+        if isinstance(quality, str) and isinstance(url, str) and url.strip():
+            return quality, url.strip()
+
+    return None, None
+
+
+def _play_button(stream_url: str | None, quality_urls: dict[str, str] | None) -> InlineKeyboardButton | None:
+    """Prefer the API stream URL; otherwise fall back to the best quality URL."""
+    if isinstance(stream_url, str) and stream_url.strip():
+        return InlineKeyboardButton("▶️ Play Video", url=stream_url.strip())
+
+    quality, url = _best_quality(quality_urls)
+    if url:
+        return InlineKeyboardButton(f"▶️ Play {quality}", url=url)
+
+    return None
 
 
 def file_keyboard(
@@ -59,8 +88,9 @@ def file_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    if stream_url:
-        rows.append([InlineKeyboardButton("▶️ Play Video", url=stream_url)])
+    play_button = _play_button(stream_url, quality_urls)
+    if play_button:
+        rows.append([play_button])
 
     if quality_urls and len(quality_urls) >= 2:
         rows.append(
@@ -130,8 +160,9 @@ def selected_file_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    if stream_url:
-        rows.append([InlineKeyboardButton("▶️ Play Video", url=stream_url)])
+    play_button = _play_button(stream_url, quality_urls)
+    if play_button:
+        rows.append([play_button])
 
     if quality_urls and len(quality_urls) >= 2:
         rows.append(

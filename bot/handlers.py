@@ -234,7 +234,7 @@ async def process_url(
                 lines.append(f"📺 Quality: {escape(str(first_file.quality))}")
             if first_file.thumbnail:
                 lines.append("🖼️ Thumbnail available")
-            if first_file.stream_url:
+            if first_file.stream_url or first_file.quality_urls:
                 lines.append("▶️ Video playback available")
             if first_file.quality_urls and len(first_file.quality_urls) >= 2:
                 qualities = ", ".join(first_file.quality_urls.keys())
@@ -464,7 +464,7 @@ async def callback_handler(
             lines.append(f"📺 Quality: {escape(str(item.get('quality')))}")
         if item.get("thumbnail"):
             lines.append("🖼️ Thumbnail available")
-        if stream_url:
+        if stream_url or quality_urls:
             lines.append("▶️ Video playback available")
         if isinstance(quality_urls, dict) and len(quality_urls) >= 2:
             qualities = ", ".join(str(key) for key in quality_urls.keys())
@@ -509,7 +509,7 @@ async def callback_handler(
         await query.message.edit_text(
             "🎚️ <b>Choose Video Quality</b>\n\n"
             f"📺 Available: <b>{escape(qualities)}</b>\n\n"
-            "Tap a quality to open the video stream.",
+            "Tap a quality to open the corresponding video stream.",
             parse_mode="HTML",
             reply_markup=quality_keyboard(quality_urls),
         )
@@ -549,7 +549,7 @@ async def callback_handler(
             lines.append(f"📺 Quality: {escape(str(item.get('quality')))}")
         if item.get("thumbnail"):
             lines.append("🖼️ Thumbnail available")
-        if stream_url:
+        if stream_url or quality_urls:
             lines.append("▶️ Video playback available")
         if isinstance(quality_urls, dict) and len(quality_urls) >= 2:
             qualities = ", ".join(str(key) for key in quality_urls.keys())

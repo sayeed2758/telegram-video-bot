@@ -189,6 +189,23 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
         or item.get("direct_link")
     )
 
+    # Some API variants wrap URLs inside a links/urls object. Keep this
+    # fallback limited to explicit download-named keys so a stream URL is
+    # never accidentally exposed as a download action.
+    if not direct:
+        for container_key in ("links", "urls", "download"):
+            container = item.get(container_key)
+            if isinstance(container, dict):
+                direct = (
+                    container.get("download_link")
+                    or container.get("fast_download_link")
+                    or container.get("download_url")
+                    or container.get("url")
+                )
+                if isinstance(direct, str) and direct.strip():
+                    break
+                direct = None
+
     stream = (
         item.get("stream_url")
         or item.get("streamUrl")

@@ -43,7 +43,7 @@ def file_keyboard(
 
     if direct_url:
         rows.append(
-            [InlineKeyboardButton("📥 Download", url=direct_url)]
+            [InlineKeyboardButton("📥 Download File", url=direct_url)]
         )
 
     rows.append(

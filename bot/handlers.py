@@ -175,10 +175,14 @@ async def process_url(
                 lines.append("▶️ Video playback available")
             if index == 1 and item.direct_url:
                 lines.append("📥 Direct download available")
+            elif index == 1:
+                lines.append("📥 Direct download link unavailable")
             lines.append("")
 
         if first_direct_url or first_stream_url:
             lines.append("👇 <b>Choose an action below</b>")
+            if first_direct_url:
+                lines.append("📥 <i>Download opens the original file link directly.</i>")
         else:
             lines.append(
                 "ℹ️ <b>File details found.</b>\n"

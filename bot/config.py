@@ -71,4 +71,5 @@ except ValueError:
 # Phase 40: premium subscription purchase contact. Payment is handled manually
 # by the owner in the current release; no payment gateway is connected.
 SUBSCRIPTION_CONTACT_USERNAME = os.getenv("SUBSCRIPTION_CONTACT_USERNAME", "Dragonn_Exclusive").strip().lstrip("@")
+SUBSCRIPTION_CONTACT_USER_ID = int(os.getenv("SUBSCRIPTION_CONTACT_USER_ID", "7955228561").strip() or "7955228561")
 SUBSCRIPTION_DAYS = max(1, int(os.getenv("SUBSCRIPTION_DAYS", "30").strip() or "30"))

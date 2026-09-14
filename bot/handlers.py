@@ -32,6 +32,7 @@ from bot.keyboards import (
     file_list_keyboard_compact,
     selected_file_keyboard,
     quality_keyboard,
+    subscription_keyboard,
     welcome_keyboard,
 )
 from bot.platforms import TERABOX_HOSTS, extract_url, extract_urls

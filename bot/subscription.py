@@ -24,6 +24,7 @@ DATA_DIR = BASE_DIR / "data"
 DB_PATH = Path(os.getenv("SUBSCRIPTIONS_DB_PATH", str(DATA_DIR / "subscriptions.sqlite3")))
 TIMEZONE = ZoneInfo(os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() or "Asia/Kolkata")
 CONTACT_USERNAME = os.getenv("SUBSCRIPTION_CONTACT_USERNAME", "Dragonn_Exclusive").strip().lstrip("@")
+CONTACT_USER_ID = int(os.getenv("SUBSCRIPTION_CONTACT_USER_ID", "7955228561").strip() or "7955228561")
 SUBSCRIPTION_DAYS = max(1, int(os.getenv("SUBSCRIPTION_DAYS", "30").strip() or "30"))
 
 PLANS: dict[str, dict[str, object]] = {
@@ -185,7 +186,8 @@ def build_purchase_url(user: User | None, plan_id: str) -> str:
     text = (
         f"Hello Shahid Sir, I want to purchase the {name} plan. "
         f"Plan: {name} ({plan['description']}). "
-        f"My Telegram User ID: {user_id}. Username: {username}."
+        f"My Telegram User ID: {user_id}. Username: {username}. "
+        f"Contact ID: {CONTACT_USER_ID}."
     )
     return f"https://t.me/{CONTACT_USERNAME}?text={quote(text)}"
 

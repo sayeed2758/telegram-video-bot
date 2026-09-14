@@ -26,9 +26,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _PLAYTERABOX_RATE_LIMIT_UNTIL = 0.0
 
-TIMEOUT = httpx.Timeout(8.0, connect=4.0)
-PLAYTERABOX_API_ATTEMPTS = 2
-PLAYTERABOX_RETRY_DELAYS = (1.0,)
+TIMEOUT = httpx.Timeout(12.0, connect=5.0)
+PLAYTERABOX_API_ATTEMPTS = 4
+PLAYTERABOX_RETRY_DELAYS = (0.75, 1.5, 2.5)
 
 # Temporary API failures are retried internally. The user should not have to
 # press Retry just because the first API request timed out.

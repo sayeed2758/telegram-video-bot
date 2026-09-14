@@ -24,6 +24,7 @@ from bot.keyboards import (
     welcome_keyboard,
 )
 from bot.platforms import TERABOX_HOSTS, extract_url
+from bot.profile import build_profile_text
 from bot.resolver import resolve_link
 
 WELCOME_TEXT = (
@@ -39,7 +40,8 @@ HELP_TEXT = (
     "3️⃣ If the share can be resolved, its file details will be shown.\n\n"
     "⚠️ Some TeraBox shares may require verification or a valid session.\n\n"
     "🚦 <b>Daily limit:</b> 2 videos per day by default. Use <code>/mylimit</code> to check your quota.\n"
-    "📜 <b>History:</b> Your recent successfully processed videos are saved automatically.\n\n"
+    "📜 <b>History:</b> Your recent successfully processed videos are saved automatically.\n"
+    "👤 <b>Profile:</b> View your usage, daily quota, and processing statistics.\n\n"
     "🛠️ <b>Any Problem you can Report here :-</b> "
     '<a href="https://t.me/Dragonn_Exclusive">@Dragonn_Exclusive</a>'
 )
@@ -140,6 +142,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                         InlineKeyboardButton("🌐 Supported", callback_data="supported"),
                         InlineKeyboardButton("📜 History", callback_data="history"),
                     ],
+                    [InlineKeyboardButton("👤 Profile", callback_data="profile")],
                     [InlineKeyboardButton("🏠 Start", callback_data="start")],
                 ]
             ),
@@ -190,6 +193,24 @@ async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await message.reply_text(
         f"🆔 <b>Your Telegram User ID</b>\n\n<code>{user.id}</code>",
         parse_mode="HTML",
+    )
+
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    await message.reply_text(
+        build_profile_text(user),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📜 History", callback_data="history"),
+                InlineKeyboardButton("🚦 My Limit", callback_data="mylimit"),
+            ],
+            [InlineKeyboardButton("🏠 Start", callback_data="start")],
+        ]),
     )
 
 
@@ -693,6 +714,38 @@ async def callback_handler(
         )
         return
 
+    if query.data == "profile":
+        user = update.effective_user
+        if user is None:
+            return
+        await query.message.reply_text(
+            build_profile_text(user),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📜 History", callback_data="history"),
+                    InlineKeyboardButton("🚦 My Limit", callback_data="mylimit"),
+                ],
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+            ]),
+        )
+        return
+
+    if query.data == "mylimit":
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        await query.message.reply_text(
+            _format_limit_status(get_status(user_id)) +
+            "\n\nℹ️ Your quota resets automatically at midnight (India time).",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👤 Profile", callback_data="profile")],
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+            ]),
+        )
+        return
+
     if query.data == "history":
         user_id = _user_id_from_update(update)
         if user_id is None:
@@ -1033,6 +1086,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("session", session_command))
     application.add_handler(CommandHandler("mylimit", mylimit_command))
     application.add_handler(CommandHandler("myid", myid_command))
+    application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))

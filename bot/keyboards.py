@@ -10,6 +10,9 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("📜 History", callback_data="history"),
+                InlineKeyboardButton("👤 Profile", callback_data="profile"),
+            ],
+            [
                 InlineKeyboardButton("🔄 Retry", callback_data="retry"),
             ],
         ]
@@ -25,8 +28,9 @@ def error_keyboard() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton("📜 History", callback_data="history"),
-                InlineKeyboardButton("🏠 Start", callback_data="start"),
+                InlineKeyboardButton("👤 Profile", callback_data="profile"),
             ],
+            [InlineKeyboardButton("🏠 Start", callback_data="start")],
         ]
     )
 

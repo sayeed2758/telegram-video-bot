@@ -124,6 +124,16 @@ def try_consume(user_id: int, video_count: int) -> bool:
         return True
 
 
+def get_lifetime_video_count(user_id: int) -> int:
+    """Return the total successfully consumed video quota across all dates."""
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT COALESCE(SUM(video_count), 0) AS total FROM daily_usage WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+    return int(row["total"]) if row else 0
+
+
 def is_admin(user_id: int) -> bool:
     raw = os.getenv("ADMIN_USER_IDS", "").strip()
     if not raw:

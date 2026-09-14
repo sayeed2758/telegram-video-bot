@@ -40,6 +40,7 @@ from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_perio
 from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, mark_inactive, register_user
 from bot.security import validate_incoming_text
+from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -437,8 +438,55 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+def _admin_status_text() -> str:
+    snapshot = RESOLVE_QUEUE.snapshot_now()
+    maintenance = "🛑 ON" if is_maintenance() else "🟢 OFF"
+    api = "✅ Configured" if TERABOX_API_KEY else "❌ Missing"
+    webhook_secret = "✅ Configured" if __import__("bot.config", fromlist=["WEBHOOK_SECRET_TOKEN"]).WEBHOOK_SECRET_TOKEN else "⚠️ Not set"
+    return (
+        "🩺 <b>System Status</b>\n\n"
+        f"🏷️ Version: <b>{APP_VERSION}</b>\n"
+        f"⏱️ Uptime: <b>{escape(format_uptime())}</b>\n"
+        f"🛠️ Maintenance: <b>{maintenance}</b>\n"
+        f"⚡ PlayTeraBox API: <b>{api}</b>\n"
+        f"🔐 Webhook secret: <b>{webhook_secret}</b>\n"
+        f"🚦 Queue: <b>{snapshot['active']}</b> active / <b>{snapshot['waiting']}</b> waiting\n"
+        f"🎯 Concurrency: <b>{snapshot['max_concurrent']}</b>\n"
+    )
+
+
+def _maintenance_text() -> str:
+    state = "🛑 <b>Maintenance mode is ON</b>" if is_maintenance() else "🟢 <b>Maintenance mode is OFF</b>"
+    if is_maintenance():
+        detail = "Normal users are temporarily blocked from processing links. Admin controls remain available."
+    else:
+        detail = "Users can submit links normally."
+    return f"🛠️ <b>Maintenance Control</b>\n\n{state}\n\n{detail}"
+
+
+def _system_control_keyboard() -> InlineKeyboardMarkup:
+    if is_maintenance():
+        toggle = InlineKeyboardButton("🟢 Turn Maintenance OFF", callback_data="admin_maintenance_off")
+    else:
+        toggle = InlineKeyboardButton("🛑 Turn Maintenance ON", callback_data="admin_maintenance_on")
+    return InlineKeyboardMarkup([
+        [toggle],
+        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status")],
+        [InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ])
+
+
 def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],[InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
+        [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
+        [InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],
+        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status"), InlineKeyboardButton("🛠️ Maintenance", callback_data="admin_maintenance")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ])
 
 def _admin_stats_text() -> str:
     s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active broadcast users: <b>{s['active_registry']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
@@ -589,6 +637,34 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     draft = " ".join(context.args).strip() if context.args else None
     await _start_broadcast(message, context, draft)
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+    await message.reply_text(_admin_status_text(), parse_mode="HTML", reply_markup=_system_control_keyboard())
+
+
+async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+
+    arg = (context.args[0].strip().lower() if context.args else "")
+    if arg in {"on", "off"}:
+        set_maintenance(arg == "on")
+    elif arg:
+        await message.reply_text("⚠️ Use <code>/maintenance on</code> or <code>/maintenance off</code>.", parse_mode="HTML")
+        return
+
+    await message.reply_text(_maintenance_text(), parse_mode="HTML", reply_markup=_system_control_keyboard())
 
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1074,6 +1150,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await message.reply_text("⚠️ Please send a valid numeric Telegram User ID."); return
         await message.reply_text(_admin_user_text(target_id),parse_mode="HTML",reply_markup=_admin_user_keyboard(target_id)); return
 
+    # Phase 34: maintenance mode blocks normal processing while keeping admin controls available.
+    actor = update.effective_user
+    if is_maintenance() and not (actor is not None and is_admin(actor.id)):
+        await message.reply_text(
+            "🛠️ <b>Bot is temporarily under maintenance.</b>\n\n"
+            "Please try again after a short while. Your saved history and profile are safe.",
+            parse_mode="HTML",
+            reply_markup=welcome_keyboard(),
+        )
+        return
+
     # Phase 11: accept a share password only after the bot explicitly asks for it.
     if context.user_data.get("awaiting_password"):
         password = message.text.strip()
@@ -1145,7 +1232,7 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
@@ -1154,6 +1241,16 @@ async def callback_handler(
             await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
         if query.data == "admin_queue":
             await query.message.edit_text(_admin_queue_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+        if query.data == "admin_status":
+            await query.message.edit_text(_admin_status_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
+        if query.data == "admin_maintenance":
+            await query.message.edit_text(_maintenance_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
+        if query.data == "admin_maintenance_on":
+            set_maintenance(True)
+            await query.message.edit_text(_maintenance_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
+        if query.data == "admin_maintenance_off":
+            set_maintenance(False)
+            await query.message.edit_text(_maintenance_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
         if query.data == "admin_broadcast":
             await _start_broadcast(query.message, context, actor=actor)
             return
@@ -1636,6 +1733,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("analytics", analytics_command))
     application.add_handler(CommandHandler("queue", queue_command))
+    application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
     application.add_handler(CallbackQueryHandler(callback_handler))

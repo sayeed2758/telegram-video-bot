@@ -1,11 +1,11 @@
-"""Phase 34 runtime production controls."""
+"""Final production runtime controls."""
 from __future__ import annotations
 
 import os
 import time
 
 STARTED_AT = time.monotonic()
-APP_VERSION = "37.0.0"
+APP_VERSION = "38.0.0"
 
 # Optional Render/environment switch. Admin controls below can change this at runtime.
 MAINTENANCE_MODE = os.getenv("BOT_MAINTENANCE_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}

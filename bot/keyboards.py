@@ -2,6 +2,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def welcome_keyboard() -> InlineKeyboardMarkup:
+    """Clean home navigation; retry is kept for actual results/errors only."""
     return InlineKeyboardMarkup(
         [
             [
@@ -13,7 +14,7 @@ def welcome_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("👤 Profile", callback_data="profile"),
             ],
             [
-                InlineKeyboardButton("🔄 Retry", callback_data="retry"),
+                InlineKeyboardButton("🔐 Session Status", callback_data="session"),
             ],
         ]
     )
@@ -112,6 +113,12 @@ def file_keyboard(
             InlineKeyboardButton("🏠 Start", callback_data="start"),
         ]
     )
+    rows.append(
+        [
+            InlineKeyboardButton("📜 History", callback_data="history"),
+            InlineKeyboardButton("👤 Profile", callback_data="profile"),
+        ]
+    )
 
     return InlineKeyboardMarkup(rows)
 
@@ -138,6 +145,12 @@ def file_list_keyboard(files_count: int) -> InlineKeyboardMarkup:
         )
 
     rows.append([InlineKeyboardButton("🏠 Start", callback_data="start")])
+    rows.append(
+        [
+            InlineKeyboardButton("📜 History", callback_data="history"),
+            InlineKeyboardButton("👤 Profile", callback_data="profile"),
+        ]
+    )
     return InlineKeyboardMarkup(rows)
 
 
@@ -183,6 +196,12 @@ def selected_file_keyboard(
         [
             InlineKeyboardButton("🔄 Process Again", callback_data="retry"),
             InlineKeyboardButton("🏠 Start", callback_data="start"),
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton("📜 History", callback_data="history"),
+            InlineKeyboardButton("👤 Profile", callback_data="profile"),
         ]
     )
 

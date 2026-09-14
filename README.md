@@ -1,43 +1,35 @@
-# Advance Tera Video Bot — Phase 9
+# Advance Tera Video Bot — Phase 11
 
-Phase 9 keeps the Render webhook foundation and adds a **no-cookie public-gateway fallback** for TeraBox public shares.
+Phase 11 is a small step forward from Phase 10. It keeps the Render webhook foundation and adds three focused improvements:
 
-## Resolver order
+1. Password/extraction-code handling for TeraBox shares that explicitly require a password.
+2. Clearer classification of password-required vs verification-required failures.
+3. A visible `▶️ Play Video` button when a stream URL is returned.
 
-1. Owner-configured `TERABOX_GATEWAY_URL` (if set)
-2. Owner-configured `TERABOX_PROXY_URL` (if set)
-3. Native TeraBox resolver
-4. Public no-cookie gateway fallbacks
-5. If all fail, the bot reports the actual resolver failure instead of inventing a download link
+## Password flow
 
-The public gateway fallback does **not** receive `TERABOX_NDUS` or `TERABOX_COOKIE`.
+When the resolver reports that a share requires a password, the bot asks the user to send that password in Telegram. The password is used only for the current resolver attempt and is not written to GitHub.
 
-## Render Environment Variables
+Some TeraBox gateway implementations document `pwd` as the optional parameter for password-protected shares.
 
-Keep your existing working values:
+## Environment Variables
 
+Keep your working:
 - `BOT_TOKEN`
 - `RENDER_EXTERNAL_URL`
 
-Optional private session values:
-
+Optional private session values remain supported:
 - `TERABOX_NDUS`
 - `TERABOX_COOKIE`
 
-Optional owner-controlled resolver values:
-
+Optional owner-controlled endpoints remain supported:
 - `TERABOX_GATEWAY_URL`
 - `TERABOX_PROXY_URL`
-
-Optional custom public gateway list (comma-separated):
-
+- `TERABOX_TBX_PROXY_URL`
 - `TERABOX_PUBLIC_GATEWAYS`
 
-If `TERABOX_PUBLIC_GATEWAYS` is empty, the bot uses the Phase 9 public gateway fallback URLs built into the resolver. These services are third-party and may become unavailable or change behavior, so this is a fallback rather than a guarantee.
+Do not add fake cookie values. Do not send private cookies/tokens to Telegram or commit them to GitHub.
 
 ## Important
 
-- Never put cookies/tokens in GitHub or Telegram.
-- Do not use fake `TERABOX_NDUS` values.
-- A TeraBox share may still require password/captcha/session verification; the bot does not bypass those protections.
-- No direct URL is fabricated. A Play/Download button appears only when the resolver actually returns a direct URL.
+Password support does not bypass CAPTCHA or session verification. It only passes a user-provided share password to compatible resolver routes.

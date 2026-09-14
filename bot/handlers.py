@@ -38,7 +38,7 @@ from bot.queue_manager import RESOLVE_QUEUE
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
 from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
 from bot.resolver import resolve_link
-from bot.users import get_broadcast_users, mark_inactive, register_user
+from bot.users import get_broadcast_users, get_user_record, mark_inactive, register_user, search_users
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 
@@ -489,19 +489,71 @@ def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def _admin_stats_text() -> str:
-    s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active broadcast users: <b>{s['active_registry']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
+    s = get_dashboard_stats()
+    return (
+        "👑 <b>Admin Dashboard</b>\n\n"
+        f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n"
+        "👥 <b>User Overview</b>\n"
+        f"• Known users: <b>{s['users']}</b>\n"
+        f"• Active users: <b>{s['active_registry']}</b>\n"
+        f"• Inactive users: <b>{s['inactive_registry']}</b>\n"
+        f"• Active today: <b>{s['today_active']}</b>\n"
+        f"• Custom limits: <b>{s['custom_limits']}</b>\n\n"
+        "🎬 <b>Video Statistics</b>\n"
+        f"• Successful videos: <b>{s['videos']}</b>\n"
+        f"• Videos today: <b>{s['today_videos']}</b>\n"
+        f"• History video records: <b>{s['history_videos']}</b>\n"
+        f"• History entries: <b>{s['history_entries']}</b>\n\n"
+        f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos"
+    )
 
 def _admin_users_keyboard(users) -> InlineKeyboardMarkup:
-    rows=[[InlineKeyboardButton(f"👤 {u['user_id']} • 🎬 {u['lifetime_videos']}",callback_data=f"admin_user:{u['user_id']}")] for u in users[:15]]
-    rows += [[InlineKeyboardButton("📊 Statistics",callback_data="admin_stats"),InlineKeyboardButton("🔄 Refresh",callback_data="admin_users")],[InlineKeyboardButton("🏠 Start",callback_data="start")]]
+    rows = []
+    for u in users[:15]:
+        label = str(u.get("username") or u.get("first_name") or u["user_id"])
+        if len(label) > 20:
+            label = label[:19] + "…"
+        rows.append([
+            InlineKeyboardButton(
+                f"👤 {label} • 🎬 {u['lifetime_videos']}",
+                callback_data=f"admin_user:{u['user_id']}",
+            )
+        ])
+    rows += [
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("🔄 Refresh", callback_data="admin_users")],
+        [InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ]
     return InlineKeyboardMarkup(rows)
 
 def _admin_user_keyboard(user_id:int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("0️⃣ Block",callback_data=f"admin_set:{user_id}:0"),InlineKeyboardButton("2️⃣ 2/day",callback_data=f"admin_set:{user_id}:2")],[InlineKeyboardButton("5️⃣ 5/day",callback_data=f"admin_set:{user_id}:5"),InlineKeyboardButton("🔟 10/day",callback_data=f"admin_set:{user_id}:10")],[InlineKeyboardButton("♾️ Unlimited",callback_data=f"admin_set:{user_id}:-1"),InlineKeyboardButton("↩️ Default",callback_data=f"admin_reset:{user_id}")],[InlineKeyboardButton("👥 Users",callback_data="admin_users")],[InlineKeyboardButton("🏠 Start",callback_data="start")]])
 
-def _admin_user_text(user_id:int) -> str:
-    i=get_user_admin_info(user_id); lt="♾️ Unlimited" if int(i['limit'])<0 else str(i['limit']); rem="♾️" if int(i['remaining'])<0 else str(i['remaining'])
-    return ("👤 <b>User Administration</b>\n\n" f"🆔 User ID: <code>{user_id}</code>\n" f"🎬 Successful videos: <b>{i['history_videos']}</b>\n" f"📜 History entries: <b>{i['history_entries']}</b>\n\n" f"📅 Today: <b>{i['used']}</b> used\n" f"🎯 Daily limit: <b>{escape(lt)}</b>\n" f"🟢 Remaining today: <b>{escape(rem)}</b>\n\n👇 <b>Select a limit action:</b>")
+def _admin_user_text(user_id: int) -> str:
+    i = get_user_admin_info(user_id)
+    lt = "♾️ Unlimited" if int(i["limit"]) < 0 else str(i["limit"])
+    rem = "♾️" if int(i["remaining"]) < 0 else str(i["remaining"])
+    username = f"@{i['username']}" if i.get("username") else "Not set"
+    name = i.get("first_name") or "Unknown"
+    activity = "🟢 Active" if int(i.get("is_active", 0)) else "⚪ Inactive"
+    last_seen = i.get("last_seen") or "No activity recorded"
+    last_processed = i.get("last_processed_at") or "No successful video yet"
+    return (
+        "👤 <b>User Administration</b>\n\n"
+        f"🆔 User ID: <code>{user_id}</code>\n"
+        f"👤 Name: <b>{escape(str(name))}</b>\n"
+        f"🔗 Username: <b>{escape(username)}</b>\n"
+        f"📡 Status: <b>{activity}</b>\n"
+        f"🕒 Last seen: <b>{escape(str(last_seen))}</b>\n\n"
+        "📊 <b>Usage</b>\n"
+        f"• 🎬 Successful videos: <b>{i['history_videos']}</b>\n"
+        f"• 📜 History entries: <b>{i['history_entries']}</b>\n"
+        f"• 📅 Today: <b>{i['used']}</b> used\n"
+        f"• 🎯 Daily limit: <b>{escape(lt)}</b>\n"
+        f"• 🟢 Remaining today: <b>{escape(rem)}</b>\n"
+        f"• 🕘 Last successful processing: <b>{escape(str(last_processed))}</b>\n\n"
+        "👇 <b>Select a limit action:</b>"
+    )
 
 
 def _admin_broadcast_keyboard() -> InlineKeyboardMarkup:
@@ -512,6 +564,55 @@ def _admin_broadcast_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
     ])
+
+
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+    users = get_users(15)
+    if not users:
+        await message.reply_text("👥 <b>Users</b>\n\nNo user records are available yet.", parse_mode="HTML", reply_markup=_admin_dashboard_keyboard())
+        return
+    lines = ["👥 <b>User Management</b>", "", "Tap a user to inspect identity, activity, usage and limits.", ""]
+    for n, item in enumerate(users, 1):
+        identity = f"@{item['username']}" if item.get('username') else (item.get('first_name') or 'No username')
+        lines.append(f"{n}. <b>{escape(identity)}</b> • <code>{item['user_id']}</code> • 🎬 {item['lifetime_videos']}")
+    await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=_admin_users_keyboard(users))
+
+
+async def find_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+    query = " ".join(context.args).strip() if context.args else ""
+    if not query:
+        await _admin_find_user_prompt(message, context)
+        return
+    matches = search_users(query, 10)
+    if not matches:
+        await message.reply_text(
+            f"🔎 <b>No user found</b>\n\nSearch: <code>{escape(query)}</code>",
+            parse_mode="HTML",
+            reply_markup=_admin_dashboard_keyboard(),
+        )
+        return
+    rows = []
+    for item in matches:
+        label = f"@{item['username']}" if item.get('username') else (item.get('first_name') or str(item['user_id']))
+        rows.append([InlineKeyboardButton(f"👤 {label} • {item['user_id']}", callback_data=f"admin_user:{item['user_id']}")])
+    rows.append([InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")])
+    await message.reply_text(
+        f"🔎 <b>Search Results</b>\n\nQuery: <code>{escape(query)}</code>\nFound: <b>{len(matches)}</b>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
 
 
 async def _start_broadcast(message, context, draft: str | None = None, actor=None) -> None:
@@ -676,8 +777,14 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await m.reply_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard())
 
 async def _admin_find_user_prompt(message, context):
-    context.user_data['awaiting_admin_user_id']=True
-    await message.reply_text("🔎 <b>Find User</b>\n\nSend the Telegram User ID to inspect.\n\nExample: <code>7955228561</code>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel",callback_data="admin")]]))
+    context.user_data["awaiting_admin_user_search"] = True
+    await message.reply_text(
+        "🔎 <b>Find User</b>\n\n"
+        "Send a Telegram User ID, <code>@username</code>, or part of the user's name.\n\n"
+        "Example: <code>7955228561</code> or <code>@username</code>",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin")]]),
+    )
 
 def _history_keyboard(rows) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
@@ -1139,16 +1246,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    if context.user_data.get("awaiting_admin_user_id"):
-        context.user_data.pop("awaiting_admin_user_id", None)
-        actor=update.effective_user
-        if actor is None or not is_admin(actor.id): return
-        try:
-            target_id=int(message.text.strip())
-            if target_id<=0: raise ValueError
-        except ValueError:
-            await message.reply_text("⚠️ Please send a valid numeric Telegram User ID."); return
-        await message.reply_text(_admin_user_text(target_id),parse_mode="HTML",reply_markup=_admin_user_keyboard(target_id)); return
+    if context.user_data.get("awaiting_admin_user_search"):
+        context.user_data.pop("awaiting_admin_user_search", None)
+        actor = update.effective_user
+        if actor is None or not is_admin(actor.id):
+            return
+        query = message.text.strip()
+        matches = search_users(query, 10)
+        if not matches:
+            await message.reply_text(
+                f"🔎 <b>No user found</b>\n\nSearch: <code>{escape(query)}</code>",
+                parse_mode="HTML",
+                reply_markup=_admin_dashboard_keyboard(),
+            )
+            return
+        buttons = []
+        for item in matches:
+            label = f"@{item['username']}" if item.get('username') else (item.get('first_name') or str(item['user_id']))
+            buttons.append([InlineKeyboardButton(f"👤 {label} • {item['user_id']}", callback_data=f"admin_user:{item['user_id']}")])
+        buttons.append([InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")])
+        await message.reply_text(
+            f"🔎 <b>Search Results</b>\n\nQuery: <code>{escape(query)}</code>\nFound: <b>{len(matches)}</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return
 
     # Phase 34: maintenance mode blocks normal processing while keeping admin controls available.
     actor = update.effective_user
@@ -1266,16 +1388,23 @@ async def callback_handler(
                 reply_markup=_admin_broadcast_keyboard(),
             )
             return
-        if query.data=="admin_users":
-            users=get_users(15)
+        if query.data == "admin_users":
+            users = get_users(15)
             if not users:
-                await query.message.edit_text("👥 <b>Users</b>\n\nNo user statistics are available yet.",parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
-            lines=["👥 <b>Users</b>","","🎬 Lifetime successful-video usage by user",""]
-            for n,u in enumerate(users,1):
-                lt="∞" if int(u['limit'])<0 else str(u['limit']); lines.append(f"{n}. <code>{u['user_id']}</code> • 🎬 {u['lifetime_videos']} • 📅 {u['today_videos']} today • 🎯 {lt}/day")
-            lines += ["","👇 Tap a user for limit controls."]
-            await query.message.edit_text("\n".join(lines),parse_mode="HTML",reply_markup=_admin_users_keyboard(users)); return
-        if query.data=="admin_find_user": await _admin_find_user_prompt(query.message,context); return
+                await query.message.edit_text("👥 <b>Users</b>\n\nNo user statistics are available yet.", parse_mode="HTML", reply_markup=_admin_dashboard_keyboard())
+                return
+            lines = ["👥 <b>Users</b>", "", "🎬 Lifetime successful-video usage", ""]
+            for n, u in enumerate(users, 1):
+                identity = f"@{u['username']}" if u.get("username") else (u.get("first_name") or "Unknown")
+                lt = "∞" if int(u['limit']) < 0 else str(u['limit'])
+                state = "🟢" if int(u.get("is_active", 0)) else "⚪"
+                lines.append(f"{n}. {state} <b>{escape(identity)}</b> • <code>{u['user_id']}</code> • 🎬 {u['lifetime_videos']} • 📅 {u['today_videos']} • 🎯 {lt}/day")
+            lines += ["", "👇 Tap a user for detailed activity and limit controls."]
+            await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=_admin_users_keyboard(users))
+            return
+        if query.data == "admin_find_user":
+            await _admin_find_user_prompt(query.message, context)
+            return
         if query.data.startswith("admin_user:"):
             try: target=int(query.data.split(":",1)[1])
             except ValueError: await query.answer("Invalid user ID.",show_alert=True); return
@@ -1727,6 +1856,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("myid", myid_command))
     application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler("admin", admin_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("finduser", find_user_command))
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))

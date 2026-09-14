@@ -1,4 +1,4 @@
-"""Persistent lightweight Telegram user registry for admin broadcasts."""
+"""Persistent lightweight Telegram user registry for admin broadcasts and user management."""
 
 from __future__ import annotations
 
@@ -58,15 +58,13 @@ def register_user(user) -> None:
 
 
 def get_broadcast_users() -> list[int]:
-    """Return active users, including users known to the older Phase 23-27 databases."""
+    """Return active users, including users known to older Phase 23-27 databases."""
     with _connect() as connection:
         rows = connection.execute(
             "SELECT user_id FROM users WHERE is_active = 1 ORDER BY user_id"
         ).fetchall()
     user_ids = {int(row["user_id"]) for row in rows}
 
-    # Backfill recipients from the existing rate-limit/history databases so a
-    # fresh Phase 28 registry does not exclude users who already used the bot.
     legacy_paths = (
         DATA_DIR / "rate_limits.sqlite3",
         DATA_DIR / "history.sqlite3",
@@ -85,7 +83,9 @@ def get_broadcast_users() -> list[int]:
                 for table in ("daily_usage", "user_limits", "processing_history"):
                     if table not in tables:
                         continue
-                    rows = connection.execute(f"SELECT DISTINCT user_id FROM {table}").fetchall()
+                    rows = connection.execute(
+                        f"SELECT DISTINCT user_id FROM {table}"
+                    ).fetchall()
                     user_ids.update(int(row[0]) for row in rows if row and row[0] is not None)
         except sqlite3.Error:
             continue
@@ -117,4 +117,42 @@ def get_user_registry_stats() -> dict[str, int]:
         active = int(
             connection.execute("SELECT COUNT(*) FROM users WHERE is_active = 1").fetchone()[0] or 0
         )
-    return {"total": total, "active": active}
+        inactive = max(0, total - active)
+    return {"total": total, "active": active, "inactive": inactive}
+
+
+def get_user_record(user_id: int) -> dict | None:
+    """Return stored identity/activity details for one user."""
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT user_id, username, first_name, last_seen, is_active FROM users WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def search_users(query: str, limit: int = 10) -> list[dict]:
+    """Search by Telegram ID, username, or first name."""
+    query = str(query or "").strip()
+    limit = max(1, min(int(limit), 20))
+    if not query:
+        return []
+
+    clean = query[1:] if query.startswith("@") else query
+    with _connect() as connection:
+        rows = []
+        if clean.isdigit():
+            rows = connection.execute(
+                "SELECT user_id, username, first_name, last_seen, is_active "
+                "FROM users WHERE user_id = ? LIMIT ?",
+                (int(clean), limit),
+            ).fetchall()
+        else:
+            needle = f"%{clean.lower()}%"
+            rows = connection.execute(
+                "SELECT user_id, username, first_name, last_seen, is_active "
+                "FROM users WHERE LOWER(username) LIKE ? OR LOWER(first_name) LIKE ? "
+                "ORDER BY is_active DESC, last_seen DESC LIMIT ?",
+                (needle, needle, limit),
+            ).fetchall()
+    return [dict(row) for row in rows]

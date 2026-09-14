@@ -7,6 +7,7 @@ from telegram.ext import ApplicationBuilder
 
 from bot.handlers import register_handlers
 from bot.cleanup import cleanup_loop, purge_expired_history
+from bot.subscription import purge_expired_subscriptions
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -24,11 +25,12 @@ WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
 
 async def _post_init(application) -> None:
     purge_expired_history()
+    purge_expired_subscriptions()
     stop_event = asyncio.Event()
     task = asyncio.create_task(cleanup_loop(stop_event))
     application.bot_data["cleanup_stop_event"] = stop_event
     application.bot_data["cleanup_task"] = task
-    logger.info("Phase 39 cleanup loop started (TTL=%ss).", __import__("bot.cleanup", fromlist=["HISTORY_TTL_SECONDS"]).HISTORY_TTL_SECONDS)
+    logger.info("Phase 40 cleanup loop started (history TTL=%ss).", __import__("bot.cleanup", fromlist=["HISTORY_TTL_SECONDS"]).HISTORY_TTL_SECONDS)
 
 
 async def _post_shutdown(application) -> None:

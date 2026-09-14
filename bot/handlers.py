@@ -1,4 +1,5 @@
 from pathlib import Path
+from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -11,7 +12,13 @@ from telegram.ext import (
 )
 
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
-from bot.keyboards import error_keyboard, file_keyboard, welcome_keyboard
+from bot.keyboards import (
+    error_keyboard,
+    file_keyboard,
+    file_list_keyboard_compact,
+    selected_file_keyboard,
+    welcome_keyboard,
+)
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.resolver import resolve_link
 
@@ -153,8 +160,49 @@ async def process_url(
     result = await resolve_link(url, password=password)
 
     if result.ok:
-        # Phase 16: present the resolved item like a compact professional
-        # result card while keeping the existing resolver/output untouched.
+        # Phase 18: keep the single-file UI, but expose every file from a
+        # folder/share through an interactive selector. The resolved data is
+        # stored only for the current user/session; URLs are never placed in
+        # callback_data.
+        context.user_data["resolved_files"] = [
+            {
+                "name": item.name,
+                "size": item.size,
+                "direct_url": item.direct_url,
+                "stream_url": item.stream_url,
+            }
+            for item in result.files
+        ]
+
+        if len(result.files) > 1:
+            lines = [
+                "✅ <b>Ready!</b>",
+                "",
+                "⚡ <b>Processed via PlayTeraBox</b>",
+                "",
+                f"📦 <b>{len(result.files)} file(s) found</b>",
+                "",
+                "👇 <b>Select a file to continue:</b>",
+                "",
+            ]
+
+            for index, item in enumerate(result.files, start=1):
+                lines.append(
+                    f"{index}️⃣ <b>{escape(str(item.name))}</b>\n"
+                    f"   💾 {escape(str(item.size))}"
+                )
+                if index < len(result.files):
+                    lines.append("")
+
+            await status.edit_text(
+                "\n".join(lines),
+                parse_mode="HTML",
+                reply_markup=file_list_keyboard_compact(
+                    [item.name for item in result.files]
+                ),
+            )
+            return
+
         first_file = result.files[0] if result.files else None
         first_direct_url = first_file.direct_url if first_file else None
         first_stream_url = first_file.stream_url if first_file else None
@@ -168,14 +216,14 @@ async def process_url(
             "",
         ]
 
-        for index, item in enumerate(result.files, start=1):
-            lines.append(f"🎬 <b>{index}. {item.name}</b>")
-            lines.append(f"💾 Size: {item.size}")
-            if index == 1 and item.stream_url:
+        if first_file:
+            lines.append(f"🎬 <b>1. {escape(str(first_file.name))}</b>")
+            lines.append(f"💾 Size: {escape(str(first_file.size))}")
+            if first_file.stream_url:
                 lines.append("▶️ Video playback available")
-            if index == 1 and item.direct_url:
+            if first_file.direct_url:
                 lines.append("📥 Direct download available")
-            elif index == 1:
+            else:
                 lines.append("📥 Direct download link unavailable")
             lines.append("")
 
@@ -189,10 +237,8 @@ async def process_url(
                 "No playable/download URL was returned for this result."
             )
 
-        text = "\n".join(lines)
-
         await status.edit_text(
-            text,
+            "\n".join(lines),
             parse_mode="HTML",
             reply_markup=file_keyboard(first_direct_url, first_stream_url),
         )
@@ -336,6 +382,75 @@ async def callback_handler(
     if query.data == "start":
         context.user_data.pop("last_url", None)
         await _send_welcome(query.message)
+        return
+
+    if query.data and query.data.startswith("select_file:"):
+        raw_index = query.data.split(":", 1)[1]
+        try:
+            index = int(raw_index)
+        except ValueError:
+            await query.answer("Invalid file selection.", show_alert=True)
+            return
+
+        files = context.user_data.get("resolved_files") or []
+        if index < 0 or index >= len(files):
+            await query.answer("This file selection is no longer available.", show_alert=True)
+            return
+
+        item = files[index]
+        name = escape(str(item.get("name") or "Unknown file"))
+        size = escape(str(item.get("size") or "Unknown size"))
+        direct_url = item.get("direct_url")
+        stream_url = item.get("stream_url")
+
+        lines = [
+            "📄 <b>Selected File</b>",
+            "",
+            f"🎬 <b>{index + 1}. {name}</b>",
+            f"💾 Size: {size}",
+        ]
+        if stream_url:
+            lines.append("▶️ Video playback available")
+        if direct_url:
+            lines.append("📥 Direct download available")
+        else:
+            lines.append("📥 Direct download link unavailable")
+        lines.extend(["", "👇 <b>Choose an action below</b>"])
+
+        await query.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=selected_file_keyboard(direct_url, stream_url),
+        )
+        return
+
+    if query.data == "all_files":
+        files = context.user_data.get("resolved_files") or []
+        if not files:
+            await query.answer("The file list is no longer available.", show_alert=True)
+            return
+
+        lines = [
+            "📂 <b>All Files</b>",
+            "",
+            f"📦 <b>{len(files)} file(s) found</b>",
+            "",
+            "👇 <b>Select a file to continue:</b>",
+            "",
+        ]
+        for index, item in enumerate(files, start=1):
+            lines.append(
+                f"{index}️⃣ <b>{escape(str(item.get('name') or 'Unknown file'))}</b>\n"
+                f"   💾 {escape(str(item.get('size') or 'Unknown size'))}"
+            )
+            if index < len(files):
+                lines.append("")
+
+        await query.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=file_list_keyboard_compact([str(item.get("name") or "Unknown file") for item in files]),
+        )
         return
 
     if query.data == "retry":

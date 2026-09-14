@@ -1,10 +1,6 @@
-from __future__ import annotations
-
 import json
 import logging
 import re
-import asyncio
-import time
 from dataclasses import dataclass
 from urllib.parse import unquote, urlparse
 
@@ -19,58 +15,11 @@ from bot.config import (
     TERABOX_TBX_PROXY_URL,
     TERABOX_API_KEY,
     TERABOX_API_URL,
-    TERABOX_API_MIN_INTERVAL_SECONDS,
-    TERABOX_API_CACHE_TTL_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = httpx.Timeout(5.0, connect=3.0)
-
-# The paid PlayTeraBox route is authoritative when configured.  Keep a small
-# in-process cache and a serialized request gate so rapid retries/double taps
-# do not burn credits or trigger provider-side HTTP 429 responses.
-_API_GATE_LOCK = asyncio.Lock()
-_API_LAST_REQUEST_AT = 0.0
-_API_CACHE: dict[tuple[str, str], tuple[float, "ResolveResult"]] = {}
-
-
-async def _wait_for_api_slot() -> None:
-    global _API_LAST_REQUEST_AT
-    min_interval = max(float(TERABOX_API_MIN_INTERVAL_SECONDS), 0.0)
-    async with _API_GATE_LOCK:
-        now = time.monotonic()
-        delay = (_API_LAST_REQUEST_AT + min_interval) - now
-        if delay > 0:
-            await asyncio.sleep(delay)
-        _API_LAST_REQUEST_AT = time.monotonic()
-
-
-def _api_cache_key(share_url: str, password: str | None = None) -> tuple[str, str]:
-    return (share_url.strip(), password or "")
-
-
-def _get_cached_api_result(share_url: str, password: str | None = None) -> ResolveResult | None:
-    key = _api_cache_key(share_url, password)
-    entry = _API_CACHE.get(key)
-    if not entry:
-        return None
-    created_at, result = entry
-    ttl = max(int(TERABOX_API_CACHE_TTL_SECONDS), 0)
-    if ttl == 0 or time.monotonic() - created_at > ttl:
-        _API_CACHE.pop(key, None)
-        return None
-    # Return the same immutable-ish result object; callers only read it.
-    return result
-
-
-def _cache_api_result(share_url: str, password: str | None, result: ResolveResult) -> None:
-    # Cache successful resolutions only. Errors should be retried after the
-    # user's normal Retry flow rather than being sticky.
-    if result.ok:
-        _API_CACHE[_api_cache_key(share_url, password)] = (time.monotonic(), result)
-
-
 
 SHARE_LIST_HOSTS = (
     "www.terabox.app",
@@ -316,7 +265,6 @@ def _parse_files(payload) -> list[ResolvedFile]:
 async def _playterabox_api_resolve(
     client: httpx.AsyncClient,
     share_url: str,
-    password: str | None = None,
 ) -> ResolveResult:
     """Resolve a share through the active PlayTeraBox /api/proxy endpoint.
 
@@ -329,13 +277,6 @@ async def _playterabox_api_resolve(
     """
     if not TERABOX_API_KEY:
         return ResolveResult(False, [], "PlayTeraBox API key is not configured.")
-
-    cached = _get_cached_api_result(share_url, password)
-    if cached is not None:
-        logger.info("PlayTeraBox API cache hit for share URL")
-        return cached
-
-    await _wait_for_api_slot()
 
     try:
         response = await client.get(
@@ -357,12 +298,6 @@ async def _playterabox_api_resolve(
         payload = response.json()
     except (ValueError, json.JSONDecodeError):
         return ResolveResult(False, [], "PlayTeraBox API returned invalid JSON.")
-
-    if response.status_code == 429:
-        retry_after = response.headers.get("Retry-After")
-        suffix = f" Retry after {retry_after} seconds." if retry_after else " Please wait a few seconds and retry."
-        logger.warning("PlayTeraBox API rate-limited the request (HTTP 429).%s", suffix)
-        return ResolveResult(False, [], "PlayTeraBox API rate limit exceeded." + suffix)
 
     if response.status_code == 401:
         return ResolveResult(False, [], "PlayTeraBox API key is invalid or missing.")
@@ -429,9 +364,7 @@ async def _playterabox_api_resolve(
             str(reason or "PlayTeraBox API returned no usable file data."),
         )
 
-    result = ResolveResult(True, unique, f"Found {len(unique)} file(s) via PlayTeraBox API.")
-    _cache_api_result(share_url, password, result)
-    return result
+    return ResolveResult(True, unique, f"Found {len(unique)} file(s) via PlayTeraBox API.")
 
 
 async def _proxy_resolve(client: httpx.AsyncClient, code: str, password: str | None = None) -> ResolveResult:
@@ -742,14 +675,19 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
     ) as client:
         # 1. PlayTeraBox API Pro (owner subscription).
         if TERABOX_API_KEY:
-            api_result = await _playterabox_api_resolve(client, url, password=password)
+            api_result = await _playterabox_api_resolve(client, url)
             if api_result.ok:
                 return api_result
-            # When the paid API is configured, it is the authoritative route.
-            # Do NOT silently fall through to the native resolver on 429/5xx/
-            # verification responses; doing that masks the real API problem
-            # with a misleading TeraBox-session error.
-            return api_result
+            # A configured API is the authoritative paid route for this phase.
+            # For auth/subscription failures, return immediately instead of
+            # silently spending time on unrelated fallback services.
+            if any(token in api_result.message.lower() for token in (
+                "api key",
+                "wallet balance",
+                "not subscribed",
+                "access is denied",
+            )):
+                return api_result
 
         # 2. Optional owner-controlled gateway.
         if TERABOX_GATEWAY_URL:

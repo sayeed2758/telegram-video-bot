@@ -45,6 +45,7 @@ class ResolvedFile:
     thumbnail: str | None = None
     direct_url: str | None = None
     stream_url: str | None = None
+    quality_urls: dict[str, str] | None = None
 
 
 @dataclass
@@ -164,6 +165,26 @@ def _pick_fast_stream_url(value) -> str | None:
     return None
 
 
+def _extract_quality_urls(item: dict) -> dict[str, str]:
+    """Read the documented PlayTeraBox fast_stream_url quality map."""
+    value = item.get("fast_stream_url")
+    if not isinstance(value, dict):
+        return {}
+
+    quality_urls: dict[str, str] = {}
+    for quality, url in value.items():
+        if not isinstance(quality, str) or not isinstance(url, str):
+            continue
+        if not url.strip():
+            continue
+        label = quality.strip().lower()
+        if not label:
+            continue
+        quality_urls[label] = url.strip()
+
+    return quality_urls
+
+
 def _file_from_dict(item: dict) -> ResolvedFile | None:
     name = (
         item.get("server_filename")
@@ -206,6 +227,8 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
                     break
                 direct = None
 
+    quality_urls = _extract_quality_urls(item)
+
     stream = (
         item.get("stream_url")
         or item.get("streamUrl")
@@ -220,6 +243,7 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
         thumbnail=thumb if isinstance(thumb, str) else None,
         direct_url=direct if isinstance(direct, str) else None,
         stream_url=stream if isinstance(stream, str) else None,
+        quality_urls=quality_urls or None,
     )
 
 

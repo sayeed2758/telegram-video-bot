@@ -17,6 +17,7 @@ from bot.keyboards import (
     file_keyboard,
     file_list_keyboard_compact,
     selected_file_keyboard,
+    quality_keyboard,
     welcome_keyboard,
 )
 from bot.platforms import TERABOX_HOSTS, extract_url
@@ -170,6 +171,7 @@ async def process_url(
                 "size": item.size,
                 "direct_url": item.direct_url,
                 "stream_url": item.stream_url,
+                "quality_urls": item.quality_urls or {},
             }
             for item in result.files
         ]
@@ -203,6 +205,7 @@ async def process_url(
             )
             return
 
+        context.user_data["active_file_index"] = 0
         first_file = result.files[0] if result.files else None
         first_direct_url = first_file.direct_url if first_file else None
         first_stream_url = first_file.stream_url if first_file else None
@@ -221,6 +224,9 @@ async def process_url(
             lines.append(f"💾 Size: {escape(str(first_file.size))}")
             if first_file.stream_url:
                 lines.append("▶️ Video playback available")
+            if first_file.quality_urls and len(first_file.quality_urls) >= 2:
+                qualities = ", ".join(first_file.quality_urls.keys())
+                lines.append(f"🎚️ Qualities: {escape(qualities)}")
             if first_file.direct_url:
                 lines.append("📥 Direct download available")
             else:
@@ -240,7 +246,11 @@ async def process_url(
         await status.edit_text(
             "\n".join(lines),
             parse_mode="HTML",
-            reply_markup=file_keyboard(first_direct_url, first_stream_url),
+            reply_markup=file_keyboard(
+                first_direct_url,
+                first_stream_url,
+                first_file.quality_urls if first_file else None,
+            ),
         )
         return
 
@@ -381,6 +391,8 @@ async def callback_handler(
 
     if query.data == "start":
         context.user_data.pop("last_url", None)
+        context.user_data.pop("active_file_index", None)
+        context.user_data.pop("resolved_files", None)
         await _send_welcome(query.message)
         return
 
@@ -402,6 +414,8 @@ async def callback_handler(
         size = escape(str(item.get("size") or "Unknown size"))
         direct_url = item.get("direct_url")
         stream_url = item.get("stream_url")
+        quality_urls = item.get("quality_urls") or {}
+        context.user_data["active_file_index"] = index
 
         lines = [
             "📄 <b>Selected File</b>",
@@ -411,6 +425,9 @@ async def callback_handler(
         ]
         if stream_url:
             lines.append("▶️ Video playback available")
+        if isinstance(quality_urls, dict) and len(quality_urls) >= 2:
+            qualities = ", ".join(str(key) for key in quality_urls.keys())
+            lines.append(f"🎚️ Qualities available: {escape(qualities)}")
         if direct_url:
             lines.append("📥 Direct download available")
         else:
@@ -420,7 +437,88 @@ async def callback_handler(
         await query.message.edit_text(
             "\n".join(lines),
             parse_mode="HTML",
-            reply_markup=selected_file_keyboard(direct_url, stream_url),
+            reply_markup=selected_file_keyboard(
+                direct_url,
+                stream_url,
+                quality_urls if isinstance(quality_urls, dict) else None,
+            ),
+        )
+        return
+
+    if query.data == "quality":
+        files = context.user_data.get("resolved_files") or []
+        raw_index = context.user_data.get("active_file_index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            await query.answer("Please select a file first.", show_alert=True)
+            return
+
+        if index < 0 or index >= len(files):
+            await query.answer("This file is no longer available.", show_alert=True)
+            return
+
+        item = files[index]
+        quality_urls = item.get("quality_urls") or {}
+        if not isinstance(quality_urls, dict) or len(quality_urls) < 2:
+            await query.answer("Multiple video qualities are not available.", show_alert=True)
+            return
+
+        qualities = ", ".join(str(key) for key in quality_urls.keys())
+        await query.message.edit_text(
+            "🎚️ <b>Choose Video Quality</b>\n\n"
+            f"📺 Available: <b>{escape(qualities)}</b>\n\n"
+            "Tap a quality to open the video stream.",
+            parse_mode="HTML",
+            reply_markup=quality_keyboard(quality_urls),
+        )
+        return
+
+    if query.data == "quality_back":
+        files = context.user_data.get("resolved_files") or []
+        raw_index = context.user_data.get("active_file_index")
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            await query.answer("Please select a file again.", show_alert=True)
+            return
+
+        if index < 0 or index >= len(files):
+            await query.answer("This file is no longer available.", show_alert=True)
+            return
+
+        item = files[index]
+        name = escape(str(item.get("name") or "Unknown file"))
+        size = escape(str(item.get("size") or "Unknown size"))
+        direct_url = item.get("direct_url")
+        stream_url = item.get("stream_url")
+        quality_urls = item.get("quality_urls") or {}
+
+        lines = [
+            "📄 <b>Selected File</b>",
+            "",
+            f"🎬 <b>{index + 1}. {name}</b>",
+            f"💾 Size: {size}",
+        ]
+        if stream_url:
+            lines.append("▶️ Video playback available")
+        if isinstance(quality_urls, dict) and len(quality_urls) >= 2:
+            qualities = ", ".join(str(key) for key in quality_urls.keys())
+            lines.append(f"🎚️ Qualities available: {escape(qualities)}")
+        if direct_url:
+            lines.append("📥 Direct download available")
+        else:
+            lines.append("📥 Direct download link unavailable")
+        lines.extend(["", "👇 <b>Choose an action below</b>"])
+
+        await query.message.edit_text(
+            "\n".join(lines),
+            parse_mode="HTML",
+            reply_markup=selected_file_keyboard(
+                direct_url,
+                stream_url,
+                quality_urls if isinstance(quality_urls, dict) else None,
+            ),
         )
         return
 

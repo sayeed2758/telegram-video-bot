@@ -29,14 +29,43 @@ def error_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _quality_order(quality_urls: dict[str, str]) -> list[str]:
+    preferred = ("1080p", "720p", "480p", "360p")
+    return [quality for quality in preferred if quality in quality_urls] + [
+        quality for quality in quality_urls if quality not in preferred
+    ]
+
+
+def quality_keyboard(quality_urls: dict[str, str]) -> InlineKeyboardMarkup:
+    """Create a quality selector using direct URL buttons from the API response."""
+    rows: list[list[InlineKeyboardButton]] = []
+    ordered = _quality_order(quality_urls)
+
+    for quality in ordered:
+        url = quality_urls.get(quality)
+        if isinstance(url, str) and url.strip():
+            rows.append(
+                [InlineKeyboardButton(f"📺 {quality}", url=url.strip())]
+            )
+
+    rows.append([InlineKeyboardButton("⬅️ Back", callback_data="quality_back")])
+    return InlineKeyboardMarkup(rows)
+
+
 def file_keyboard(
     direct_url: str | None,
     stream_url: str | None = None,
+    quality_urls: dict[str, str] | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
     if stream_url:
         rows.append([InlineKeyboardButton("▶️ Play Video", url=stream_url)])
+
+    if quality_urls and len(quality_urls) >= 2:
+        rows.append(
+            [InlineKeyboardButton("🎚️ Choose Quality", callback_data="quality")]
+        )
 
     if direct_url:
         rows.append([InlineKeyboardButton("📥 Download File", url=direct_url)])
@@ -62,8 +91,6 @@ def file_list_keyboard(files_count: int) -> InlineKeyboardMarkup:
     """Create a compact selector for a resolved multi-file share."""
     rows: list[list[InlineKeyboardButton]] = []
 
-    # Buttons use only the numeric index in callback_data so long file names
-    # never exceed Telegram's callback-data size limit.
     for index in range(files_count):
         rows.append(
             [
@@ -99,18 +126,22 @@ def file_list_keyboard_compact(file_names: list[str]) -> InlineKeyboardMarkup:
 def selected_file_keyboard(
     direct_url: str | None,
     stream_url: str | None,
+    quality_urls: dict[str, str] | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
     if stream_url:
         rows.append([InlineKeyboardButton("▶️ Play Video", url=stream_url)])
 
+    if quality_urls and len(quality_urls) >= 2:
+        rows.append(
+            [InlineKeyboardButton("🎚️ Choose Quality", callback_data="quality")]
+        )
+
     if direct_url:
         rows.append([InlineKeyboardButton("📥 Download File", url=direct_url)])
 
-    rows.append(
-        [InlineKeyboardButton("📂 All Files", callback_data="all_files")]
-    )
+    rows.append([InlineKeyboardButton("📂 All Files", callback_data="all_files")])
     rows.append(
         [
             InlineKeyboardButton("🔄 Process Again", callback_data="retry"),

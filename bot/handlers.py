@@ -25,6 +25,7 @@ from bot.keyboards import (
 )
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.profile import build_profile_text
+from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
 from bot.resolver import resolve_link
 
 WELCOME_TEXT = (
@@ -297,6 +298,35 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
         parse_mode="HTML",
     )
 
+
+def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],[InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
+
+def _admin_stats_text() -> str:
+    s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
+
+def _admin_users_keyboard(users) -> InlineKeyboardMarkup:
+    rows=[[InlineKeyboardButton(f"👤 {u['user_id']} • 🎬 {u['lifetime_videos']}",callback_data=f"admin_user:{u['user_id']}")] for u in users[:15]]
+    rows += [[InlineKeyboardButton("📊 Statistics",callback_data="admin_stats"),InlineKeyboardButton("🔄 Refresh",callback_data="admin_users")],[InlineKeyboardButton("🏠 Start",callback_data="start")]]
+    return InlineKeyboardMarkup(rows)
+
+def _admin_user_keyboard(user_id:int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("0️⃣ Block",callback_data=f"admin_set:{user_id}:0"),InlineKeyboardButton("2️⃣ 2/day",callback_data=f"admin_set:{user_id}:2")],[InlineKeyboardButton("5️⃣ 5/day",callback_data=f"admin_set:{user_id}:5"),InlineKeyboardButton("🔟 10/day",callback_data=f"admin_set:{user_id}:10")],[InlineKeyboardButton("♾️ Unlimited",callback_data=f"admin_set:{user_id}:-1"),InlineKeyboardButton("↩️ Default",callback_data=f"admin_reset:{user_id}")],[InlineKeyboardButton("👥 Users",callback_data="admin_users")],[InlineKeyboardButton("🏠 Start",callback_data="start")]])
+
+def _admin_user_text(user_id:int) -> str:
+    i=get_user_admin_info(user_id); lt="♾️ Unlimited" if int(i['limit'])<0 else str(i['limit']); rem="♾️" if int(i['remaining'])<0 else str(i['remaining'])
+    return ("👤 <b>User Administration</b>\n\n" f"🆔 User ID: <code>{user_id}</code>\n" f"🎬 Successful videos: <b>{i['history_videos']}</b>\n" f"📜 History entries: <b>{i['history_entries']}</b>\n\n" f"📅 Today: <b>{i['used']}</b> used\n" f"🎯 Daily limit: <b>{escape(lt)}</b>\n" f"🟢 Remaining today: <b>{escape(rem)}</b>\n\n👇 <b>Select a limit action:</b>")
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    m=update.effective_message; u=update.effective_user
+    if m is None or u is None: return
+    if not is_admin(u.id):
+        await m.reply_text("🚫 <b>Admin access required.</b>",parse_mode="HTML"); return
+    await m.reply_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard())
+
+async def _admin_find_user_prompt(message, context):
+    context.user_data['awaiting_admin_user_id']=True
+    await message.reply_text("🔎 <b>Find User</b>\n\nSend the Telegram User ID to inspect.\n\nExample: <code>7955228561</code>",parse_mode="HTML",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel",callback_data="admin")]]))
 
 def _history_keyboard(rows) -> InlineKeyboardMarkup:
     buttons: list[list[InlineKeyboardButton]] = []
@@ -620,6 +650,17 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if message is None or not message.text:
         return
 
+    if context.user_data.get("awaiting_admin_user_id"):
+        context.user_data.pop("awaiting_admin_user_id", None)
+        actor=update.effective_user
+        if actor is None or not is_admin(actor.id): return
+        try:
+            target_id=int(message.text.strip())
+            if target_id<=0: raise ValueError
+        except ValueError:
+            await message.reply_text("⚠️ Please send a valid numeric Telegram User ID."); return
+        await message.reply_text(_admin_user_text(target_id),parse_mode="HTML",reply_markup=_admin_user_keyboard(target_id)); return
+
     # Phase 11: accept a share password only after the bot explicitly asks for it.
     if context.user_data.get("awaiting_password"):
         password = message.text.strip()
@@ -667,6 +708,38 @@ async def callback_handler(
         return
 
     await query.answer()
+
+    if query.data in {"admin","admin_stats","admin_users","admin_find_user"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+        actor=update.effective_user
+        if actor is None or not is_admin(actor.id): return
+        if query.data in {"admin","admin_stats"}:
+            await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+        if query.data=="admin_users":
+            users=get_users(15)
+            if not users:
+                await query.message.edit_text("👥 <b>Users</b>\n\nNo user statistics are available yet.",parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+            lines=["👥 <b>Users</b>","","🎬 Lifetime successful-video usage by user",""]
+            for n,u in enumerate(users,1):
+                lt="∞" if int(u['limit'])<0 else str(u['limit']); lines.append(f"{n}. <code>{u['user_id']}</code> • 🎬 {u['lifetime_videos']} • 📅 {u['today_videos']} today • 🎯 {lt}/day")
+            lines += ["","👇 Tap a user for limit controls."]
+            await query.message.edit_text("\n".join(lines),parse_mode="HTML",reply_markup=_admin_users_keyboard(users)); return
+        if query.data=="admin_find_user": await _admin_find_user_prompt(query.message,context); return
+        if query.data.startswith("admin_user:"):
+            try: target=int(query.data.split(":",1)[1])
+            except ValueError: await query.answer("Invalid user ID.",show_alert=True); return
+            await query.message.edit_text(_admin_user_text(target),parse_mode="HTML",reply_markup=_admin_user_keyboard(target)); return
+        if query.data.startswith("admin_set:"):
+            try:
+                _,uid,lim=query.data.split(":",2); target=int(uid); new=int(lim)
+            except ValueError: await query.answer("Invalid limit action.",show_alert=True); return
+            if new < -1: await query.answer("Invalid limit.",show_alert=True); return
+            set_user_limit(target,new)
+            await query.message.edit_text("✅ <b>User limit updated.</b>\n\n"+_admin_user_text(target),parse_mode="HTML",reply_markup=_admin_user_keyboard(target)); return
+        if query.data.startswith("admin_reset:"):
+            try: target=int(query.data.split(":",1)[1])
+            except ValueError: await query.answer("Invalid user ID.",show_alert=True); return
+            reset_user_limit(target)
+            await query.message.edit_text("↩️ <b>User limit reset to default.</b>\n\n"+_admin_user_text(target),parse_mode="HTML",reply_markup=_admin_user_keyboard(target)); return
 
     if query.data == "help":
         await query.message.reply_text(
@@ -1087,6 +1160,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("mylimit", mylimit_command))
     application.add_handler(CommandHandler("myid", myid_command))
     application.add_handler(CommandHandler("profile", profile_command))
+    application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))

@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from bot.history import DB_PATH as HISTORY_DB_PATH
 from bot.rate_limiter import DB_PATH as RATE_DB_PATH, DEFAULT_LIMIT, TIMEZONE, set_limit, reset_limit, get_status
+from bot.users import get_user_registry_stats
 
 def _connect(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +23,7 @@ def _ensure():
 def _today(): return datetime.now(TIMEZONE).date().isoformat()
 
 def get_dashboard_stats():
-    _ensure(); today=_today()
+    _ensure(); today=_today(); registry=get_user_registry_stats()
     with _connect(RATE_DB_PATH) as c:
         a=int(c.execute("SELECT COUNT(DISTINCT user_id) FROM daily_usage").fetchone()[0] or 0)
         b=int(c.execute("SELECT COALESCE(SUM(video_count),0) FROM daily_usage").fetchone()[0] or 0)
@@ -33,7 +34,7 @@ def get_dashboard_stats():
         g=int(c.execute("SELECT COUNT(DISTINCT user_id) FROM processing_history").fetchone()[0] or 0)
         h=int(c.execute("SELECT COUNT(*) FROM processing_history").fetchone()[0] or 0)
         i=int(c.execute("SELECT COALESCE(SUM(video_count),0) FROM processing_history").fetchone()[0] or 0)
-    return dict(date=today,users=max(a,g),videos=b,today_videos=d,today_active=e,custom_limits=f,history_entries=h,history_videos=i,default_limit=DEFAULT_LIMIT)
+    return dict(date=today,users=max(a,g,registry["total"]),active_registry=registry["active"],videos=b,today_videos=d,today_active=e,custom_limits=f,history_entries=h,history_videos=i,default_limit=DEFAULT_LIMIT)
 
 def get_users(limit=15):
     _ensure(); limit=max(1,min(int(limit),50)); today=_today(); users={}

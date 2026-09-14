@@ -2,6 +2,7 @@ from pathlib import Path
 from html import escape
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest, Forbidden, RetryAfter
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -27,6 +28,7 @@ from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.profile import build_profile_text
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
 from bot.resolver import resolve_link
+from bot.users import get_broadcast_users, mark_inactive, register_user
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -110,6 +112,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = update.effective_message
     if message is None:
         return
+    register_user(update.effective_user)
 
     context.user_data.pop("last_url", None)
     await _send_welcome(message)
@@ -117,6 +120,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
+    register_user(update.effective_user)
     if message is not None:
         await message.reply_text(
             _session_status_text(),
@@ -127,6 +131,7 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
+    register_user(update.effective_user)
     if message is not None:
         await message.reply_text(
             HELP_TEXT,
@@ -179,6 +184,7 @@ async def mylimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = _user_id_from_update(update)
     if message is None or user_id is None:
         return
+    register_user(update.effective_user)
     await message.reply_text(
         _format_limit_status(get_status(user_id)) +
         "\n\nℹ️ Your quota resets automatically at midnight (India time).",
@@ -191,6 +197,7 @@ async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if message is None or user is None:
         return
+    register_user(user)
     await message.reply_text(
         f"🆔 <b>Your Telegram User ID</b>\n\n<code>{user.id}</code>",
         parse_mode="HTML",
@@ -202,6 +209,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     if message is None or user is None:
         return
+    register_user(user)
     await message.reply_text(
         build_profile_text(user),
         parse_mode="HTML",
@@ -220,6 +228,7 @@ async def admin_setlimit_command(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     if message is None or user is None:
         return
+    register_user(user)
     if not is_admin(user.id):
         await message.reply_text("🚫 You are not authorized to use this command.")
         return
@@ -300,10 +309,10 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
 
 
 def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],[InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],[InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
 
 def _admin_stats_text() -> str:
-    s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
+    s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active broadcast users: <b>{s['active_registry']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
 
 def _admin_users_keyboard(users) -> InlineKeyboardMarkup:
     rows=[[InlineKeyboardButton(f"👤 {u['user_id']} • 🎬 {u['lifetime_videos']}",callback_data=f"admin_user:{u['user_id']}")] for u in users[:15]]
@@ -317,9 +326,146 @@ def _admin_user_text(user_id:int) -> str:
     i=get_user_admin_info(user_id); lt="♾️ Unlimited" if int(i['limit'])<0 else str(i['limit']); rem="♾️" if int(i['remaining'])<0 else str(i['remaining'])
     return ("👤 <b>User Administration</b>\n\n" f"🆔 User ID: <code>{user_id}</code>\n" f"🎬 Successful videos: <b>{i['history_videos']}</b>\n" f"📜 History entries: <b>{i['history_entries']}</b>\n\n" f"📅 Today: <b>{i['used']}</b> used\n" f"🎯 Daily limit: <b>{escape(lt)}</b>\n" f"🟢 Remaining today: <b>{escape(rem)}</b>\n\n👇 <b>Select a limit action:</b>")
 
+
+def _admin_broadcast_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],
+        [InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ])
+
+
+async def _start_broadcast(message, context, draft: str | None = None, actor=None) -> None:
+    actor = actor or getattr(message, "from_user", None)
+    if actor is None or not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+
+    if draft is None:
+        context.user_data["awaiting_broadcast"] = True
+        await message.reply_text(
+            "📢 <b>Broadcast Message</b>\n\n"
+            "Send the message you want to broadcast to all active users.\n\n"
+            "📝 Text messages only in Phase 28.\n"
+            "❌ Use the Cancel button to stop.\n\n"
+            "Maximum length: 4096 characters.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="admin_broadcast_cancel")]]),
+        )
+        return
+
+    draft = draft.strip()
+    if not draft:
+        await message.reply_text("⚠️ Broadcast message cannot be empty.")
+        return
+    if len(draft) > 4096:
+        await message.reply_text("⚠️ Broadcast message is too long. Telegram allows up to 4096 characters per message.")
+        return
+
+    context.user_data["broadcast_draft"] = draft
+    recipients = get_broadcast_users()
+    await message.reply_text(
+        "📢 <b>Broadcast Preview</b>\n\n"
+        f"<b>Recipients:</b> {len(recipients)} active user(s)\n\n"
+        "<b>Message:</b>\n"
+        f"<pre>{escape(draft)}</pre>\n\n"
+        "Send this message to all active users?",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ Send Broadcast", callback_data="admin_broadcast_confirm"), InlineKeyboardButton("❌ Cancel", callback_data="admin_broadcast_cancel")],
+            [InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")],
+        ]),
+    )
+
+
+async def _send_broadcast(message, context, actor=None) -> None:
+    actor = actor or getattr(message, "from_user", None)
+    if actor is None or not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+
+    draft = context.user_data.pop("broadcast_draft", None)
+    if not isinstance(draft, str) or not draft.strip():
+        await message.reply_text("ℹ️ There is no broadcast draft to send.", reply_markup=_admin_broadcast_keyboard())
+        return
+
+    recipients = get_broadcast_users()
+    if not recipients:
+        await message.reply_text(
+            "📢 <b>Broadcast Complete</b>\n\nNo active users are registered yet.",
+            parse_mode="HTML",
+            reply_markup=_admin_broadcast_keyboard(),
+        )
+        return
+
+    progress = await message.reply_text(
+        "📢 <b>Broadcasting...</b>\n\n"
+        f"👥 Recipients: <b>{len(recipients)}</b>\n"
+        "⏳ Please wait while the messages are delivered.",
+        parse_mode="HTML",
+    )
+
+    sent = 0
+    failed = 0
+    blocked = 0
+    for user_id in recipients:
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=draft,
+                disable_web_page_preview=True,
+            )
+            sent += 1
+            # Stay below the normal Telegram broadcast throughput.
+            await __import__("asyncio").sleep(0.06)
+        except RetryAfter as exc:
+            wait_for = max(1.0, float(exc.retry_after))
+            await __import__("asyncio").sleep(wait_for)
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=draft,
+                    disable_web_page_preview=True,
+                )
+                sent += 1
+            except Exception:
+                failed += 1
+        except (Forbidden, BadRequest):
+            blocked += 1
+            mark_inactive(user_id)
+        except Exception:
+            failed += 1
+
+    await progress.edit_text(
+        "📢 <b>Broadcast Complete</b>\n\n"
+        f"✅ Sent: <b>{sent}</b>\n"
+        f"🚫 Inactive/blocked: <b>{blocked}</b>\n"
+        f"⚠️ Failed: <b>{failed}</b>\n"
+        f"👥 Attempted: <b>{len(recipients)}</b>",
+        parse_mode="HTML",
+        reply_markup=_admin_broadcast_keyboard(),
+    )
+
+
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    register_user(user)
+    if not is_admin(user.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    draft = " ".join(context.args).strip() if context.args else None
+    await _start_broadcast(message, context, draft)
+
+
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     m=update.effective_message; u=update.effective_user
     if m is None or u is None: return
+    register_user(u)
     if not is_admin(u.id):
         await m.reply_text("🚫 <b>Admin access required.</b>",parse_mode="HTML"); return
     await m.reply_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard())
@@ -362,6 +508,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = _user_id_from_update(update)
     if message is None or user_id is None:
         return
+    register_user(update.effective_user)
 
     rows = get_history(user_id)
     if not rows:
@@ -649,6 +796,40 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.effective_message
     if message is None or not message.text:
         return
+    register_user(update.effective_user)
+
+    # Phase 28: admin broadcast draft input. This check must run before normal
+    # TeraBox-link handling so the draft is treated as a message, not a URL.
+    if context.user_data.get("awaiting_broadcast"):
+        actor = update.effective_user
+        if actor is None or not is_admin(actor.id):
+            context.user_data.pop("awaiting_broadcast", None)
+            return
+        draft = message.text.strip()
+        if not draft:
+            await message.reply_text("⚠️ Broadcast message cannot be empty. Please send the message again.")
+            return
+        if len(draft) > 4096:
+            await message.reply_text("⚠️ Broadcast message is too long. Telegram allows up to 4096 characters per message.")
+            return
+        context.user_data.pop("awaiting_broadcast", None)
+        context.user_data["broadcast_draft"] = draft
+        await message.reply_text(
+            "📢 <b>Broadcast Preview</b>\n\n"
+            f"<b>Recipients:</b> {len(get_broadcast_users())} active user(s)\n\n"
+            "<b>Message:</b>\n"
+            f"<pre>{escape(draft)}</pre>\n\n"
+            "Send this message to all active users?",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Send Broadcast", callback_data="admin_broadcast_confirm"),
+                    InlineKeyboardButton("❌ Cancel", callback_data="admin_broadcast_cancel"),
+                ],
+                [InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")],
+            ]),
+        )
+        return
 
     if context.user_data.get("awaiting_admin_user_id"):
         context.user_data.pop("awaiting_admin_user_id", None)
@@ -708,12 +889,28 @@ async def callback_handler(
         return
 
     await query.answer()
+    register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_users","admin_find_user"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+        if query.data == "admin_broadcast":
+            await _start_broadcast(query.message, context, actor=actor)
+            return
+        if query.data == "admin_broadcast_confirm":
+            await _send_broadcast(query.message, context, actor=actor)
+            return
+        if query.data == "admin_broadcast_cancel":
+            context.user_data.pop("awaiting_broadcast", None)
+            context.user_data.pop("broadcast_draft", None)
+            await query.message.edit_text(
+                "❌ <b>Broadcast Cancelled</b>\n\nNo message was sent.",
+                parse_mode="HTML",
+                reply_markup=_admin_broadcast_keyboard(),
+            )
+            return
         if query.data=="admin_users":
             users=get_users(15)
             if not users:
@@ -1164,6 +1361,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("limit", admin_limit_command))
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
     application.add_handler(CallbackQueryHandler(callback_handler))

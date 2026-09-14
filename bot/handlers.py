@@ -10,6 +10,7 @@ from telegram.ext import (
     filters,
 )
 
+from bot.config import TERABOX_COOKIE, TERABOX_NDUS
 from bot.keyboards import error_keyboard, file_keyboard, welcome_keyboard
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.resolver import resolve_link
@@ -43,6 +44,29 @@ SUPPORTED_TEXT = (
     "• terasharelink.com"
 )
 
+SESSION_TEXT = (
+    "🔐 <b>TeraBox Session Status</b>\n\n"
+    "This check only shows whether a private TeraBox session is configured. "
+    "It never displays your cookie/token."
+)
+
+
+def _session_status_text() -> str:
+    if TERABOX_COOKIE or TERABOX_NDUS:
+        source = "TERABOX_COOKIE" if TERABOX_COOKIE else "TERABOX_NDUS"
+        return (
+            f"{SESSION_TEXT}\n\n"
+            f"✅ Session configured via <b>{source}</b>.\n"
+            "🔎 Use the Retry button on a share to test whether TeraBox accepts it."
+        )
+
+    return (
+        f"{SESSION_TEXT}\n\n"
+        "❌ No private session is configured.\n"
+        "The bot will continue using the no-cookie routes.\n\n"
+        "⚠️ Never send your cookie/token in Telegram or GitHub."
+    )
+
 WELCOME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "welcome.jpg"
 
 
@@ -71,6 +95,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     context.user_data.pop("last_url", None)
     await _send_welcome(message)
+
+
+async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is not None:
+        await message.reply_text(
+            _session_status_text(),
+            parse_mode="HTML",
+            reply_markup=error_keyboard(),
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,7 +300,23 @@ async def callback_handler(
         await query.message.reply_text(
             SUPPORTED_TEXT,
             parse_mode="HTML",
-            reply_markup=welcome_keyboard(),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [InlineKeyboardButton("🔐 Session Status", callback_data="session")],
+                    [
+                        InlineKeyboardButton("📖 Help", callback_data="help"),
+                        InlineKeyboardButton("🏠 Start", callback_data="start"),
+                    ],
+                ]
+            ),
+        )
+        return
+
+    if query.data == "session":
+        await query.message.reply_text(
+            _session_status_text(),
+            parse_mode="HTML",
+            reply_markup=error_keyboard(),
         )
         return
 
@@ -290,6 +340,7 @@ async def callback_handler(
 def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("session", session_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

@@ -468,7 +468,7 @@ async def _native_resolve(
     return ResolveResult(False, [], last_error)
 
 
-async def resolve_link(url: str, password: str | None = None) -> ResolveResult:
+async def resolve_link(url: str, password: str | None = None, session_only: bool = False) -> ResolveResult:
     code = _short_code(url)
     if not code:
         return ResolveResult(False, [], "Invalid TeraBox share URL.")
@@ -495,13 +495,24 @@ async def resolve_link(url: str, password: str | None = None) -> ResolveResult:
         if native_result.ok:
             return native_result
 
-        # 4. Documented no-cookie TBX proxy. Its stream mode can provide an
+        # 4. When explicitly checking the private session, stop here so
+        # diagnostics are not hidden by anonymous/public fallbacks.
+        if session_only:
+            if _cookie_header():
+                return ResolveResult(
+                    False,
+                    [],
+                    f"Configured TeraBox session was not accepted: {native_result.message}",
+                )
+            return ResolveResult(False, [], "No TeraBox session is configured.")
+
+        # 5. Documented no-cookie TBX proxy. Its stream mode can provide an
         # HLS playback URL without exposing the user's private cookie.
         tbx_result = await _tbx_proxy_resolve(client, code, password)
         if tbx_result.ok:
             return tbx_result
 
-        # 5. Other public no-cookie gateways.
+        # 6. Other public no-cookie gateways.
         public_result = await _public_gateway_resolve(client, url, password)
         if public_result.ok:
             return public_result

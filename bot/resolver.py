@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import re
@@ -25,7 +26,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 _PLAYTERABOX_RATE_LIMIT_UNTIL = 0.0
 
-TIMEOUT = httpx.Timeout(5.0, connect=3.0)
+TIMEOUT = httpx.Timeout(8.0, connect=4.0)
+PLAYTERABOX_API_ATTEMPTS = 2
+PLAYTERABOX_RETRY_DELAYS = (1.0,)
+
+# Temporary API failures are retried internally. The user should not have to
+# press Retry just because the first API request timed out.
+PLAYTERABOX_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
 
 SHARE_LIST_HOSTS = (
     "www.terabox.app",
@@ -284,21 +291,63 @@ async def _playterabox_api_resolve(
     if not TERABOX_API_KEY:
         return ResolveResult(False, [], "PlayTeraBox API key is not configured.")
 
-    try:
-        response = await client.get(
-            TERABOX_API_URL,
-            params={"secret": TERABOX_API_KEY, "url": share_url},
-            headers={"Accept": "application/json"},
-        )
-    except httpx.HTTPError as exc:
-        logger.warning("PlayTeraBox API request failed: %s", exc.__class__.__name__)
-        return ResolveResult(
-            False,
-            [],
-            f"PlayTeraBox API request failed: {exc.__class__.__name__}",
+    response = None
+    last_error = "PlayTeraBox API request failed."
+
+    for attempt in range(1, PLAYTERABOX_API_ATTEMPTS + 1):
+        try:
+            response = await client.get(
+                TERABOX_API_URL,
+                params={"secret": TERABOX_API_KEY, "url": share_url},
+                headers={"Accept": "application/json"},
+            )
+        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+            last_error = f"PlayTeraBox API request timed out ({exc.__class__.__name__})."
+            logger.warning(
+                "PlayTeraBox API temporary timeout on attempt %s/%s: %s",
+                attempt,
+                PLAYTERABOX_API_ATTEMPTS,
+                exc.__class__.__name__,
+            )
+            if attempt < PLAYTERABOX_API_ATTEMPTS:
+                await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
+                continue
+            return ResolveResult(False, [], last_error)
+        except httpx.HTTPError as exc:
+            last_error = f"PlayTeraBox API request failed: {exc.__class__.__name__}"
+            logger.warning(
+                "PlayTeraBox API request failed on attempt %s/%s: %s",
+                attempt,
+                PLAYTERABOX_API_ATTEMPTS,
+                exc.__class__.__name__,
+            )
+            if attempt < PLAYTERABOX_API_ATTEMPTS:
+                await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
+                continue
+            return ResolveResult(False, [], last_error)
+
+        logger.info(
+            "PlayTeraBox API GET /api/proxy -> HTTP %s (attempt %s/%s)",
+            response.status_code,
+            attempt,
+            PLAYTERABOX_API_ATTEMPTS,
         )
 
-    logger.info("PlayTeraBox API GET /api/proxy -> HTTP %s", response.status_code)
+        if response.status_code in PLAYTERABOX_RETRYABLE_STATUS_CODES and attempt < PLAYTERABOX_API_ATTEMPTS:
+            retry_after = response.headers.get("Retry-After", "")
+            # Only short provider-recommended delays are used here. The goal
+            # is to absorb transient failures inside one user request.
+            try:
+                delay = min(5.0, max(0.5, float(retry_after))) if retry_after else PLAYTERABOX_RETRY_DELAYS[attempt - 1]
+            except (TypeError, ValueError):
+                delay = PLAYTERABOX_RETRY_DELAYS[attempt - 1]
+            await asyncio.sleep(delay)
+            continue
+
+        break
+
+    if response is None:
+        return ResolveResult(False, [], last_error)
 
     if response.status_code == 429:
         retry_after = response.headers.get("Retry-After", "")
@@ -710,16 +759,11 @@ async def resolve_link(url: str, password: str | None = None, session_only: bool
             # Never fall through to native TeraBox after a provider 429.
             # Doing so only produces the misleading `need verify` message and
             # encourages users to repeat calls while the paid API is cooling down.
-            if "rate-limiting requests" in api_result.message.lower():
-                return api_result
-            # A configured API is the authoritative paid route for this phase.
-            if any(token in api_result.message.lower() for token in (
-                "api key",
-                "wallet balance",
-                "not subscribed",
-                "access is denied",
-            )):
-                return api_result
+            # When the paid PlayTeraBox API is configured, keep it authoritative.
+            # A transient timeout is retried internally above; if the API still
+            # fails, do not fall into the native resolver because its `need verify`
+            # response is a different failure mode and only confuses the user.
+            return api_result
 
         # 2. Optional owner-controlled gateway.
         if TERABOX_GATEWAY_URL:

@@ -308,7 +308,7 @@ async def process_url(
 
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
-        "⏳ Checking the TeraBox share...",
+        "⏳ Processing your video...",
         parse_mode="HTML",
     )
 

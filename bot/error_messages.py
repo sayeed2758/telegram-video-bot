@@ -27,7 +27,7 @@ def classify_resolver_error(reason: str) -> tuple[str, str]:
     if "httpx" in lowered or "timeout" in lowered or "connecterror" in lowered or "request failed" in lowered:
         return (
             "🌐 Temporary Connection Problem",
-            "The resolver or API did not respond in time. Please tap Retry in a few seconds.",
+            "The service took too long to respond. The bot already tried again automatically. Please tap Retry after a short wait if needed.",
         )
 
     if "401" in lowered or "api key is invalid" in lowered:

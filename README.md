@@ -1,86 +1,76 @@
-# Advance Tera Video Bot — Phase 11
+# Advance Tera Video Bot
 
-Phase 11 is a small step forward from Phase 10. It keeps the Render webhook foundation and adds three focused improvements:
+Current project: **Phase 26 — User Profile Dashboard**
 
-1. Password/extraction-code handling for TeraBox shares that explicitly require a password.
-2. Clearer classification of password-required vs verification-required failures.
-3. A visible `▶️ Play Video` button when a stream URL is returned.
+## Deployment
+- Build: `pip install -r requirements.txt`
+- Start: `python main.py`
+- Required environment variables: `BOT_TOKEN`, `RENDER_EXTERNAL_URL`
+- `PORT` is supplied by Render automatically.
 
-## Password flow
+## Phase 26 — User Profile Dashboard
+Added a private `/profile` dashboard and **👤 Profile** buttons.
 
-When the resolver reports that a share requires a password, the bot asks the user to send that password in Telegram. The password is used only for the current resolver attempt and is not written to GitHub.
+The profile shows:
+- Telegram name, username and user ID
+- Total successfully processed videos (from persistent daily usage records)
+- Saved history entries currently available (up to the existing 10-entry history)
+- Today's usage
+- Daily limit
+- Remaining videos for today
 
-Some TeraBox gateway implementations document `pwd` as the optional parameter for password-protected shares.
+Also added a **🚦 My Limit** shortcut from the profile.
 
-## Environment Variables
+The existing Phase 23.3 direct-processing resolver and Phase 25 history system are preserved. No resolver/API flow was changed in this phase.
 
-Keep your working:
-- `BOT_TOKEN`
-- `RENDER_EXTERNAL_URL`
+## Existing data
+- Rate-limit database: `data/rate_limits.sqlite3`
+- History database: `data/history.sqlite3`
+- Existing environment overrides remain supported.
 
-Optional private session values remain supported:
-- `TERABOX_NDUS`
-- `TERABOX_COOKIE`
-
-Optional owner-controlled endpoints remain supported:
-- `TERABOX_GATEWAY_URL`
-- `TERABOX_PROXY_URL`
-- `TERABOX_TBX_PROXY_URL`
-- `TERABOX_PUBLIC_GATEWAYS`
-
-Do not add fake cookie values. Do not send private cookies/tokens to Telegram or commit them to GitHub.
-
-## Important
-
-Password support does not bypass CAPTCHA or session verification. It only passes a user-provided share password to compatible resolver routes.
+## Phase 27 – Admin Dashboard
+- `/admin` opens an admin-only dashboard.
+- Dashboard statistics include known users, active users today, successful videos, history entries, and custom limits.
+- Admin can list users, inspect a user, find a user by Telegram ID, and set common daily limits from buttons.
+- Limit actions: Block (0), 2/day, 5/day, 10/day, Unlimited (-1), or reset to the default limit.
+- Admin access is controlled by `ADMIN_USER_IDS`.
 
 
-## Phase 12 — Session status diagnostics
+## Phase 28 — Admin Broadcast System
+- Added persistent Telegram user registry in `data/users.sqlite3`.
+- Admin-only `📢 Broadcast` dashboard flow with preview and confirmation.
+- Admin command: `/broadcast` (optionally `/broadcast Your message here`).
+- Text-only broadcasts up to Telegram's 4096-character message limit.
+- Sends to active registered users with controlled pacing.
+- Automatically marks blocked/deleted chats inactive after delivery errors.
+- Broadcast never exposes bot secrets or resolver URLs.
 
-This phase adds a safe session-status check. The bot can report whether `TERABOX_NDUS` or `TERABOX_COOKIE` exists without ever displaying its value.
+## Phase 29 — Analytics
 
-Use `/session` in Telegram, or open **🌐 Supported → 🔐 Session Status**.
+Adds an admin-only analytics center with today / 7-day / 30-day request statistics, success/failure rate, videos processed, active users, average processing time, daily breakdown, top users, resolver quality breakdown, and top error categories.
 
-No new Render environment variable is required. Existing `TERABOX_NDUS` / `TERABOX_COOKIE` remain optional.
+New command: `/analytics`
 
-The normal resolver still uses the native TeraBox flow first, then the existing anonymous fallbacks.
+New optional environment variable:
+`ANALYTICS_DB_PATH=data/analytics.sqlite3`
 
-## Phase 13 note
-Phase 13 keeps TeraBox resolution intentionally small and fast. Public third-party fallback chains are disabled by default so a failed share does not leave Telegram stuck on “Processing”. The bot checks only an explicitly configured owner gateway/proxy and the native TeraBox route, then returns quickly when TeraBox requires verification/session or a password.
+The analytics database is created automatically. Analytics failures are isolated so they never block video processing.
+## Phase 30.1 — Multi-link message fix
 
-## Phase 15 — PlayTeraBox API `/api/proxy`
+The bot now detects and processes every unique TeraBox link contained in a single Telegram message. Each link uses the existing queue, rate-limit, history, analytics, and resolver flow.
 
-This phase corrects the PlayTeraBox integration to match the endpoint shown in the PlayTeraBox API dashboard.
+## Phase 30 — Resolver Queue & Concurrency
 
-### API request
-- Method: `GET`
-- Endpoint: `https://api.playterabox.com/api/proxy`
-- Query parameters:
-  - `secret` = `TERABOX_API_KEY`
-  - `url` = the Telegram TeraBox share URL
+The bot now protects the upstream TeraBox resolver with a bounded FIFO queue. By default, at most 2 resolver jobs run at the same time, each user can have only one active/queued job, and up to 20 additional jobs may wait.
 
-### Expected response
-The API returns JSON containing a `list` array. Each file may include:
-- `name`
-- `size`
-- `download_link`
-- `fast_download_link`
-- `stream_url`
-- `fast_stream_url`
-- `subtitle_url`
-- `thumbnail`
+Optional Render environment variables:
 
-The bot uses `download_link`/`fast_download_link` for Download/Play buttons and `stream_url`/`fast_stream_url` for video playback when available.
+- `MAX_CONCURRENT_RESOLVES=2`
+- `MAX_RESOLVE_QUEUE_SIZE=20`
 
-### Render Environment
-Required:
-- `BOT_TOKEN`
-- `RENDER_EXTERNAL_URL`
-- `TERABOX_API_KEY`
+Admin tools:
+- `/queue`
+- Admin Dashboard → `⏳ Queue`
 
-Optional:
-- `TERABOX_API_URL` = `https://api.playterabox.com/api/proxy`
+Temporary queue state is kept in memory for the running Render instance; it is intentionally not written to SQLite. Existing history, analytics, rate limits, broadcast, and resolver settings are preserved.
 
-Keep the API key private. Never paste it into Telegram, GitHub, screenshots, or chat.
-
-The PlayTeraBox API is attempted first. If it succeeds, the bot stops there and does not call the slower native TeraBox resolver.

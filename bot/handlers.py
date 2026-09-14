@@ -1,5 +1,6 @@
 from pathlib import Path
 from html import escape
+from time import perf_counter
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import BadRequest, Forbidden, RetryAfter
@@ -27,6 +28,7 @@ from bot.keyboards import (
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.profile import build_profile_text
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
+from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
 from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, mark_inactive, register_user
 
@@ -88,6 +90,8 @@ def _session_status_text() -> str:
     )
 
 WELCOME_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "welcome.jpg"
+ANALYTICS_HISTORY_DB = Path(__file__).resolve().parent.parent / "data" / "history.sqlite3"
+bootstrap_from_history(ANALYTICS_HISTORY_DB)
 
 
 async def _send_welcome(message) -> None:
@@ -308,8 +312,97 @@ async def admin_resetlimit_command(update: Update, context: ContextTypes.DEFAULT
     )
 
 
+def _format_duration_ms(value: int) -> str:
+    seconds = max(0, int(value)) / 1000.0
+    if seconds < 1:
+        return f"{int(value)} ms"
+    if seconds < 60:
+        return f"{seconds:.1f} s"
+    minutes = int(seconds // 60)
+    remainder = int(round(seconds % 60))
+    return f"{minutes}m {remainder}s"
+
+
+def _analytics_text() -> str:
+    today = get_period_stats("today")
+    week = get_period_stats("7d")
+    month = get_period_stats("30d")
+    daily = get_daily_breakdown(7)
+    top_users = get_top_users(5)
+    qualities = get_quality_breakdown(30)
+
+    lines = [
+        "📈 <b>Analytics Center</b>",
+        "",
+        "🟢 <b>Today</b>",
+        f"• Requests: <b>{today['requests']}</b>",
+        f"• Successful requests: <b>{today['successes']}</b>",
+        f"• Failed requests: <b>{today['failures']}</b>",
+        f"• Videos processed: <b>{today['videos']}</b>",
+        f"• Active users: <b>{today['active_users']}</b>",
+        f"• Success rate: <b>{today['success_rate']:.1f}%</b>",
+        f"• Avg processing time: <b>{_format_duration_ms(today['avg_duration_ms'])}</b>",
+        "",
+        "📅 <b>Last 7 Days</b>",
+        f"• Requests: <b>{week['requests']}</b> • Videos: <b>{week['videos']}</b>",
+        f"• Success: <b>{week['successes']}</b> • Failed: <b>{week['failures']}</b>",
+        f"• Active users: <b>{week['active_users']}</b> • Rate: <b>{week['success_rate']:.1f}%</b>",
+        "",
+        "🗓️ <b>Last 30 Days</b>",
+        f"• Requests: <b>{month['requests']}</b> • Videos: <b>{month['videos']}</b>",
+        f"• Success: <b>{month['successes']}</b> • Failed: <b>{month['failures']}</b>",
+        f"• Active users: <b>{month['active_users']}</b> • Rate: <b>{month['success_rate']:.1f}%</b>",
+        f"• Avg time: <b>{_format_duration_ms(month['avg_duration_ms'])}</b>",
+    ]
+
+    if daily:
+        lines.extend(["", "📊 <b>7-Day Daily Breakdown</b>"])
+        for item in daily:
+            lines.append(
+                f"• {item['day']} — 🎬 {item['videos']} | ✅ {item['successes']} | ❌ {item['failures']} | 👥 {item['users']}"
+            )
+
+    if top_users:
+        lines.extend(["", "🏆 <b>Top Users (30-day analytics)</b>"])
+        for index, item in enumerate(top_users, 1):
+            lines.append(
+                f"{index}. <code>{item['user_id']}</code> — 🎬 {item['videos']} | ✅ {item['successful_requests']} | ❌ {item['failures']}"
+            )
+
+    if qualities:
+        lines.extend(["", "🎚️ <b>Resolved Quality Breakdown (30 days)</b>"])
+        lines.extend(f"• {escape(item['quality'])}: <b>{item['count']}</b>" for item in qualities)
+
+    errors = month.get("errors") or []
+    if errors:
+        lines.extend(["", "⚠️ <b>Top Error Categories (30 days)</b>"])
+        lines.extend(f"• {escape(item['category'])}: <b>{item['count']}</b>" for item in errors)
+
+    return "\n".join(lines)
+
+
+def _analytics_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Refresh Analytics", callback_data="admin_analytics")],
+        [InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ])
+
+
+async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    user = update.effective_user
+    if message is None or user is None:
+        return
+    register_user(user)
+    if not is_admin(user.id):
+        await message.reply_text("🚫 <b>Admin access required.</b>", parse_mode="HTML")
+        return
+    await message.reply_text(_analytics_text(), parse_mode="HTML", reply_markup=_analytics_keyboard())
+
+
 def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],[InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],[InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
 
 def _admin_stats_text() -> str:
     s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active broadcast users: <b>{s['active_registry']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
@@ -330,8 +423,8 @@ def _admin_user_text(user_id:int) -> str:
 def _admin_broadcast_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
-        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("👥 Users", callback_data="admin_users")],
-        [InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
+        [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
+        [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
     ])
@@ -604,6 +697,10 @@ async def process_url(
             )
             return
 
+    processing_started_at = perf_counter()
+    if caller_id is not None:
+        record_event(int(caller_id), "processing_started")
+
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
         "⏳ Processing your video...",
@@ -611,6 +708,7 @@ async def process_url(
     )
 
     result = await resolve_link(url, password=password)
+    duration_ms = int((perf_counter() - processing_started_at) * 1000)
 
     if result.ok:
         video_count = count_video_files(result.files)
@@ -620,6 +718,13 @@ async def process_url(
             if not try_consume(caller_id_int, video_count):
                 quota = get_status(caller_id_int)
                 remaining = quota["remaining"]
+                record_event(
+                    caller_id_int,
+                    "quota_blocked",
+                    duration_ms=duration_ms,
+                    video_count=video_count,
+                    file_count=len(result.files),
+                )
                 await status.edit_text(
                     "🚦 <b>Daily Video Limit Reached</b>\n\n"
                     f"This link contains <b>{video_count}</b> video file(s), but your remaining quota is <b>{remaining}</b>.\n\n"
@@ -632,6 +737,21 @@ async def process_url(
         caller_id_for_history = context.user_data.get("rate_limit_user_id")
         if caller_id_for_history is not None and video_count > 0:
             record_success(int(caller_id_for_history), url, result.files, video_count)
+            record_event(
+                int(caller_id_for_history),
+                "processing_success",
+                duration_ms=duration_ms,
+                video_count=video_count,
+                file_count=len(result.files),
+            )
+            for resolved_file in result.files:
+                quality = str(resolved_file.quality or "").strip()
+                if quality:
+                    record_event(
+                        int(caller_id_for_history),
+                        "resolved_quality",
+                        error_category=quality,
+                    )
 
         # Phase 18: keep the single-file UI, but expose every file from a
         # folder/share through an interactive selector. The resolved data is
@@ -761,6 +881,14 @@ async def process_url(
 
     reason = result.message
     lowered = str(reason or "").lower()
+    if caller_id is not None:
+        title_for_analytics, _friendly_for_analytics = classify_resolver_error(reason)
+        record_event(
+            int(caller_id),
+            "processing_failure",
+            duration_ms=duration_ms,
+            error_category=title_for_analytics.replace("🛡️ ", "").replace("❌ ", "")[:80],
+        )
 
     if "password required" in lowered:
         context.user_data["awaiting_password"] = True
@@ -891,11 +1019,13 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+        if query.data == "admin_analytics":
+            await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
         if query.data == "admin_broadcast":
             await _start_broadcast(query.message, context, actor=actor)
             return
@@ -1362,6 +1492,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("setlimit", admin_setlimit_command))
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
+    application.add_handler(CommandHandler("analytics", analytics_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
     application.add_handler(CallbackQueryHandler(callback_handler))

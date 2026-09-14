@@ -33,6 +33,10 @@ from bot.subscription import (
     PLANS,
     activate_subscription,
     expire_subscription,
+    get_subscription_stats,
+    list_subscribers,
+    get_subscription_admin_info,
+    get_expiring_subscriptions,
 )
 from bot.history import clear_history, get_history, get_history_item, record_success
 from bot.keyboards import (
@@ -461,23 +465,174 @@ async def admin_subscription_command(update: Update, context: ContextTypes.DEFAU
     actor = update.effective_user
     if message is None or actor is None:
         return
+    register_user(actor)
     if not is_admin(actor.id):
         await message.reply_text("🚫 Admin access required.")
         return
+    await message.reply_text(
+        _subscription_admin_overview_text(),
+        parse_mode="HTML",
+        reply_markup=_subscription_admin_keyboard(),
+    )
+
+
+def _subscription_admin_overview_text() -> str:
+    s = get_subscription_stats()
+    return (
+        "💳 <b>Subscription Manager</b>\n\n"
+        "📊 <b>Current</b>\n"
+        f"• 🟢 Active subscriptions: <b>{s['active']}</b>\n"
+        f"• ⭐ Active PRO: <b>{s['pro']}</b>\n"
+        f"• 💎 Active UNLIMITED: <b>{s['unlimited']}</b>\n"
+        f"• ⏰ Expiring within 7 days: <b>{s['expiring_7d']}</b>\n"
+        f"• ⚪ Expired/inactive: <b>{s['expired']}</b>\n\n"
+        "📈 <b>Last 30 days</b>\n"
+        f"• ✅ Activations: <b>{s['activations_30d']}</b>\n"
+        f"• 🔄 Renewals: <b>{s['renewals_30d']}</b>\n"
+        f"• 🛑 Manual expiries: <b>{s['manual_expiries_30d']}</b>\n"
+        f"• ⏰ Automatic expiries: <b>{s['auto_expiries_30d']}</b>\n"
+        f"• 🧾 Payment/reference IDs recorded: <b>{s['references_30d']}</b>\n\n"
+        "ℹ️ Revenue is not shown because payments are handled manually outside the bot."
+    )
+
+
+def _subscription_admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Full Analytics", callback_data="admin_sub_stats")],
+        [InlineKeyboardButton("🟢 Active Subscribers", callback_data="admin_sub_active"), InlineKeyboardButton("⏰ Expiring 7 Days", callback_data="admin_sub_expiring")],
+        [InlineKeyboardButton("👤 Subscriber Details", callback_data="admin_sub_find")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="admin_sub_refresh"), InlineKeyboardButton("👑 Dashboard", callback_data="admin")],
+        [InlineKeyboardButton("🏠 Start", callback_data="start")],
+    ])
+
+
+def _subscription_list_text(rows: list[dict[str, object]], title: str) -> str:
+    if not rows:
+        return f"{title}\n\nNo matching subscriptions found."
+    lines = [title, ""]
+    for idx, row in enumerate(rows, 1):
+        plan = PLANS.get(str(row.get('plan_id')), {})
+        emoji = plan.get('emoji', '💳')
+        name = str(plan.get('name', row.get('plan_id', 'UNKNOWN')))
+        status = str(row.get('status', 'unknown')).upper()
+        lines.append(
+            f"{idx}. {emoji} <b>{escape(name)}</b> • <code>{int(row['user_id'])}</code>\n"
+            f"   🟢 Status: <b>{escape(status)}</b> • ⏳ {escape(str(row.get('expires_at','')).replace('T',' '))}"
+        )
+    return "\n".join(lines)
+
+
+def _subscription_list_keyboard(rows: list[dict[str, object]], back: str = "admin_sub_refresh") -> InlineKeyboardMarkup:
+    buttons = []
+    for row in rows[:20]:
+        plan = PLANS.get(str(row.get('plan_id')), {})
+        label = f"{plan.get('emoji','💳')} {row['user_id']} • {plan.get('name', row.get('plan_id',''))}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"admin_sub_user:{int(row['user_id'])}")])
+    buttons.append([InlineKeyboardButton("🔙 Subscription Manager", callback_data=back)])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _subscription_user_text(user_id: int) -> str:
+    rec = get_subscription_admin_info(user_id)
+    identity = get_user_record(user_id) or {}
+    name = str(identity.get('first_name') or '')
+    username = str(identity.get('username') or '')
+    head = f"👤 <b>{escape(name or ('@'+username if username else str(user_id)))}</b>"
+    if not rec:
+        return head + f"\n\n<code>{user_id}</code>\n\n❌ No subscription record."
+    plan = PLANS.get(str(rec.get('plan_id')), {})
+    limit = int(rec.get('daily_limit', 0))
+    limit_text = '♾️ Unlimited' if limit < 0 else f'{limit}/day'
     lines = [
-        "💳 <b>Subscription Management</b>",
+        head, f"🔗 <code>{user_id}</code>",
+        f"🏷️ Username: <b>{escape('@'+username if username else 'not set')}</b>",
         "",
-        "⭐ <b>PRO</b> — 50 videos/day • 30 days",
-        "💎 <b>UNLIMITED</b> — Unlimited • 30 days",
+        f"{plan.get('emoji','💳')} <b>Plan:</b> {escape(str(plan.get('name', rec.get('plan_id',''))))}",
+        f"🟢 <b>Status:</b> {escape(str(rec.get('status','')).upper())}",
+        f"🎯 <b>Limit:</b> {escape(limit_text)}",
+        f"📅 <b>Started:</b> {escape(str(rec.get('started_at','')).replace('T',' '))}",
+        f"⏳ <b>Expires:</b> {escape(str(rec.get('expires_at','')).replace('T',' '))}",
+        f"🧾 <b>Source:</b> {escape(str(rec.get('source','')))}",
+        f"🔖 <b>Reference:</b> {escape(str(rec.get('payment_id','')) or '—')}",
         "",
-        "Use:",
-        "<code>/setplan USER_ID pro</code>",
-        "<code>/setplan USER_ID unlimited</code>",
-        "<code>/expire USER_ID</code>",
-        "",
-        "After activation the user automatically receives a confirmation with start and expiry time.",
+        "🧾 <b>Recent subscription events</b>",
     ]
-    await message.reply_text("\n".join(lines), parse_mode="HTML")
+    events = rec.get('events') or []
+    if not events:
+        lines.append("• No recorded events.")
+    else:
+        for event in events[:5]:
+            et = str(event.get('event_type','')).replace('_',' ').title()
+            when = str(event.get('created_at','')).replace('T',' ')
+            ref = str(event.get('reference',''))
+            suffix = f" • ref: <code>{escape(ref)}</code>" if ref else ""
+            lines.append(f"• {escape(et)} — {escape(when)}{suffix}")
+    return "\n".join(lines)
+
+
+def _subscription_user_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⭐ Set PRO", callback_data=f"admin_sub_setplan:{user_id}:pro"), InlineKeyboardButton("💎 Set Unlimited", callback_data=f"admin_sub_setplan:{user_id}:unlimited")],
+        [InlineKeyboardButton("🛑 Expire", callback_data=f"admin_sub_expire:{user_id}")],
+        [InlineKeyboardButton("🟢 Active", callback_data="admin_sub_active"), InlineKeyboardButton("⏰ Expiring", callback_data="admin_sub_expiring")],
+        [InlineKeyboardButton("🔙 Manager", callback_data="admin_sub_refresh")],
+    ])
+
+
+def _subscription_event_report() -> str:
+    s = get_subscription_stats()
+    return (
+        "📊 <b>Subscription Analytics</b>\n\n"
+        f"🟢 Active: <b>{s['active']}</b>\n"
+        f"⭐ PRO: <b>{s['pro']}</b>\n"
+        f"💎 Unlimited: <b>{s['unlimited']}</b>\n"
+        f"⏰ Expiring ≤ 7 days: <b>{s['expiring_7d']}</b>\n"
+        f"⚪ Expired: <b>{s['expired']}</b>\n\n"
+        f"📈 Activations (30d): <b>{s['activations_30d']}</b>\n"
+        f"🔄 Renewals (30d): <b>{s['renewals_30d']}</b>\n"
+        f"🛑 Manual expires (30d): <b>{s['manual_expiries_30d']}</b>\n"
+        f"⏰ Auto expires (30d): <b>{s['auto_expiries_30d']}</b>\n"
+        f"🗓️ Events today: <b>{s['events_today']}</b>\n"
+        f"🧾 References recorded (30d): <b>{s['references_30d']}</b>\n\n"
+        "💡 Payment gateway is disabled, so actual revenue is intentionally not estimated by the bot."
+    )
+
+
+async def substats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None: return
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    await message.reply_text(_subscription_event_report(), parse_mode="HTML", reply_markup=_subscription_admin_keyboard())
+
+
+async def subscribers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message; actor = update.effective_user
+    if message is None or actor is None: return
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    status = context.args[0].lower() if context.args else "active"
+    if status not in {"active","expired","all"}: status = "active"
+    rows = list_subscribers(status=status, limit=20)
+    title = f"👥 <b>{status.title()} Subscribers</b>"
+    await message.reply_text(_subscription_list_text(rows,title), parse_mode="HTML", reply_markup=_subscription_list_keyboard(rows))
+
+
+async def subuser_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message; actor = update.effective_user
+    if message is None or actor is None: return
+    if not is_admin(actor.id):
+        await message.reply_text("🚫 Admin access required.")
+        return
+    if len(context.args) != 1:
+        await message.reply_text("Usage: <code>/subuser USER_ID</code>", parse_mode="HTML"); return
+    try: user_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("⚠️ USER_ID must be a number."); return
+    await message.reply_text(_subscription_user_text(user_id), parse_mode="HTML", reply_markup=_subscription_user_keyboard(user_id))
 
 
 def _format_duration_ms(value: int) -> str:
@@ -1554,25 +1709,66 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions","admin_sub_stats","admin_sub_active","admin_sub_expiring","admin_sub_find","admin_sub_refresh"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")) or (query.data and query.data.startswith("admin_sub_user:")) or (query.data and query.data.startswith("admin_sub_setplan:")) or (query.data and query.data.startswith("admin_sub_expire:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_analytics":
             await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
-        if query.data == "admin_subscriptions":
-            await query.message.edit_text(
-                "💳 <b>Subscription Management</b>\n\n"
-                "⭐ <b>PRO</b> — 50 videos/day • 30 days\n"
-                "💎 <b>UNLIMITED</b> — Unlimited • 30 days\n\n"
-                "<b>Activate:</b> <code>/setplan USER_ID pro</code>\n"
-                "<code>/setplan USER_ID unlimited</code>\n\n"
-                "<b>Manual expire:</b> <code>/expire USER_ID</code>\n\n"
-                "The user receives an automatic confirmation with the exact start and expiry time.",
-                parse_mode="HTML",
-                reply_markup=_admin_dashboard_keyboard(),
-            )
+        if query.data == "admin_subscriptions" or query.data == "admin_sub_refresh":
+            await query.message.edit_text(_subscription_admin_overview_text(), parse_mode="HTML", reply_markup=_subscription_admin_keyboard())
+            return
+        if query.data == "admin_sub_stats":
+            await query.message.edit_text(_subscription_event_report(), parse_mode="HTML", reply_markup=_subscription_admin_keyboard())
+            return
+        if query.data == "admin_sub_active":
+            rows = list_subscribers("active", limit=20)
+            await query.message.edit_text(_subscription_list_text(rows, "🟢 <b>Active Subscribers</b>"), parse_mode="HTML", reply_markup=_subscription_list_keyboard(rows))
+            return
+        if query.data == "admin_sub_expiring":
+            rows = get_expiring_subscriptions(7, 20)
+            await query.message.edit_text(_subscription_list_text(rows, "⏰ <b>Expiring Within 7 Days</b>"), parse_mode="HTML", reply_markup=_subscription_list_keyboard(rows))
+            return
+        if query.data == "admin_sub_find":
+            await query.message.reply_text("🔎 <b>Subscriber Details</b>\n\nUse <code>/subuser USER_ID</code> to open a subscriber.", parse_mode="HTML")
+            return
+        if query.data.startswith("admin_sub_user:"):
+            try: target=int(query.data.split(":",1)[1])
+            except ValueError: await query.answer("Invalid user ID.", show_alert=True); return
+            await query.message.edit_text(_subscription_user_text(target), parse_mode="HTML", reply_markup=_subscription_user_keyboard(target))
+            return
+        if query.data.startswith("admin_sub_setplan:"):
+            try:
+                _, uid, pid = query.data.split(":",2)
+                target=int(uid)
+            except ValueError:
+                await query.answer("Invalid subscription action.", show_alert=True); return
+            if pid not in PLANS:
+                await query.answer("Invalid plan.", show_alert=True); return
+            previous = get_active_subscription(target)
+            renewed = bool(previous and str(previous.get("plan_id")) == pid)
+            record = activate_subscription(target, pid, source="admin_manual")
+            try:
+                await context.bot.send_message(chat_id=target, text=build_activation_message(record, renewed=renewed), parse_mode="HTML")
+                delivery = "\n📨 Confirmation sent."
+            except Exception:
+                delivery = "\n⚠️ Activated, but confirmation could not be delivered."
+            await query.message.edit_text("✅ <b>Subscription updated.</b>\n\n" + _subscription_user_text(target) + delivery, parse_mode="HTML", reply_markup=_subscription_user_keyboard(target))
+            return
+        if query.data.startswith("admin_sub_expire:"):
+            try: target=int(query.data.split(":",1)[1])
+            except ValueError: await query.answer("Invalid user ID.", show_alert=True); return
+            record = get_active_subscription(target)
+            if not record:
+                await query.answer("No active subscription.", show_alert=True); return
+            changed = expire_subscription(target)
+            if changed:
+                try:
+                    await context.bot.send_message(chat_id=target, text=build_expiry_message(record), parse_mode="HTML")
+                except Exception:
+                    pass
+            await query.message.edit_text("🛑 <b>Subscription expired.</b>\n\n" + _subscription_user_text(target), parse_mode="HTML", reply_markup=_subscription_user_keyboard(target))
             return
         if query.data == "admin_queue":
             await query.message.edit_text(_admin_queue_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
@@ -2082,6 +2278,9 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("profile", profile_command))
     application.add_handler(CommandHandler("subscription", subscription_command))
     application.add_handler(CommandHandler("subscriptions", admin_subscription_command))
+    application.add_handler(CommandHandler("substats", substats_command))
+    application.add_handler(CommandHandler("subscribers", subscribers_command))
+    application.add_handler(CommandHandler("subuser", subuser_command))
     application.add_handler(CommandHandler("setplan", admin_setplan_command))
     application.add_handler(CommandHandler("expire", admin_expire_command))
     application.add_handler(CommandHandler("admin", admin_command))

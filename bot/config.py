@@ -40,3 +40,16 @@ TERABOX_PUBLIC_GATEWAYS = tuple(
     for item in os.getenv("TERABOX_PUBLIC_GATEWAYS", "").split(",")
     if item.strip()
 )
+
+
+# Phase 30: bounded resolver queue. These values protect the upstream API
+# when several users submit links at the same time.
+try:
+    MAX_CONCURRENT_RESOLVES = max(1, min(int(os.getenv("MAX_CONCURRENT_RESOLVES", "2").strip()), 20))
+except ValueError:
+    MAX_CONCURRENT_RESOLVES = 2
+
+try:
+    MAX_RESOLVE_QUEUE_SIZE = max(1, min(int(os.getenv("MAX_RESOLVE_QUEUE_SIZE", "20").strip()), 100))
+except ValueError:
+    MAX_RESOLVE_QUEUE_SIZE = 20

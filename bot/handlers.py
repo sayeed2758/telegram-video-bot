@@ -27,6 +27,7 @@ from bot.keyboards import (
 )
 from bot.platforms import TERABOX_HOSTS, extract_url
 from bot.profile import build_profile_text
+from bot.queue_manager import RESOLVE_QUEUE
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
 from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
 from bot.resolver import resolve_link
@@ -401,8 +402,35 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await message.reply_text(_analytics_text(), parse_mode="HTML", reply_markup=_analytics_keyboard())
 
 
+def _admin_queue_text() -> str:
+    snapshot = RESOLVE_QUEUE.snapshot_now()
+    active = snapshot["active"]
+    waiting = snapshot["waiting"]
+    maximum = snapshot["max_concurrent"]
+    queue_max = snapshot["max_queue_size"]
+    return (
+        "⏳ <b>Resolver Queue Status</b>\n\n"
+        f"🟢 Active: <b>{active}</b> / <b>{maximum}</b>\n"
+        f"🕐 Waiting: <b>{waiting}</b> / <b>{queue_max}</b>\n\n"
+        "Each user can have only one active/queued request. "
+        "The resolver processes requests in FIFO order."
+    )
+
+
+async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        return
+    await message.reply_text(
+        _admin_queue_text(),
+        parse_mode="HTML",
+        reply_markup=_admin_dashboard_keyboard(),
+    )
+
+
 def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],[InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],[InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],[InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],[InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],[InlineKeyboardButton("🔄 Refresh", callback_data="admin")],[InlineKeyboardButton("🏠 Start", callback_data="start")]])
 
 def _admin_stats_text() -> str:
     s=get_dashboard_stats(); return ("👑 <b>Admin Dashboard</b>\n\n" f"📅 Date: <b>{escape(str(s['date']))}</b>\n\n" "👥 <b>Users</b>\n" f"• Known users: <b>{s['users']}</b>\n" f"• Active broadcast users: <b>{s['active_registry']}</b>\n" f"• Active today: <b>{s['today_active']}</b>\n" f"• Custom limits: <b>{s['custom_limits']}</b>\n\n" "🎬 <b>Video Statistics</b>\n" f"• Successful videos: <b>{s['videos']}</b>\n" f"• Videos today: <b>{s['today_videos']}</b>\n" f"• History video records: <b>{s['history_videos']}</b>\n" f"• History entries: <b>{s['history_entries']}</b>\n\n" f"🎯 Default daily limit: <b>{s['default_limit']}</b> videos")
@@ -707,7 +735,50 @@ async def process_url(
         parse_mode="HTML",
     )
 
-    result = await resolve_link(url, password=password)
+    # Phase 30: keep the upstream resolver bounded and FIFO so several users
+    # can use the bot at once without creating an API request burst. One user
+    # may have only one active/queued resolver job at a time.
+    queue_ticket, queue_reason = await RESOLVE_QUEUE.acquire(caller_id)
+    if queue_ticket is None:
+        if queue_reason in {"active", "queued"}:
+            text = (
+                "⏳ <b>Your previous request is still being processed.</b>\n\n"
+                "Please wait for that result before sending another link. This prevents duplicate API requests."
+            )
+        else:
+            text = (
+                "🚦 <b>Processing queue is busy.</b>\n\n"
+                "Too many requests are waiting right now. Please try again in a little while."
+            )
+        await status.edit_text(text, parse_mode="HTML", reply_markup=error_keyboard())
+        return
+
+    if queue_ticket.queued:
+        try:
+            await status.edit_text(
+                "🔗 <b>TeraBox link detected.</b>\n\n"
+                f"⏳ <b>You are in the processing queue.</b>\n"
+                f"📍 Position: <b>{queue_ticket.position}</b>\n\n"
+                "Please wait — your request will start automatically.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        await queue_ticket.wait()
+        try:
+            await status.edit_text(
+                "⚡ <b>Your turn has started.</b>\n\n"
+                "⏳ Processing your video...",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    try:
+        result = await resolve_link(url, password=password)
+    finally:
+        await RESOLVE_QUEUE.release(queue_ticket)
+
     duration_ms = int((perf_counter() - processing_started_at) * 1000)
 
     if result.ok:
@@ -1019,13 +1090,15 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_analytics":
             await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
+        if query.data == "admin_queue":
+            await query.message.edit_text(_admin_queue_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_broadcast":
             await _start_broadcast(query.message, context, actor=actor)
             return
@@ -1493,6 +1566,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("resetlimit", admin_resetlimit_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     application.add_handler(CommandHandler("analytics", analytics_command))
+    application.add_handler(CommandHandler("queue", queue_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
     application.add_handler(CallbackQueryHandler(callback_handler))

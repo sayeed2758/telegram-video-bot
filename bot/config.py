@@ -29,6 +29,15 @@ TERABOX_API_URL = os.getenv(
     "https://api.playterabox.com/api/proxy",
 ).strip().rstrip("/")
 
+# PlayTeraBox API anti-burst/cache controls. These reduce duplicate API calls
+# and help avoid upstream HTTP 429 responses.
+TERABOX_API_MIN_INTERVAL_SECONDS = float(
+    os.getenv("TERABOX_API_MIN_INTERVAL_SECONDS", "1.5").strip() or "1.5"
+)
+TERABOX_API_CACHE_TTL_SECONDS = int(
+    os.getenv("TERABOX_API_CACHE_TTL_SECONDS", "90").strip() or "90"
+)
+
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.

@@ -1,10 +1,12 @@
 import logging
+import asyncio
 import os
 
 from dotenv import load_dotenv
 from telegram.ext import ApplicationBuilder
 
 from bot.handlers import register_handlers
+from bot.cleanup import cleanup_loop, purge_expired_history
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -18,6 +20,28 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram-webhook").strip("/")
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
+
+
+async def _post_init(application) -> None:
+    purge_expired_history()
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(cleanup_loop(stop_event))
+    application.bot_data["cleanup_stop_event"] = stop_event
+    application.bot_data["cleanup_task"] = task
+    logger.info("Phase 39 cleanup loop started (TTL=%ss).", __import__("bot.cleanup", fromlist=["HISTORY_TTL_SECONDS"]).HISTORY_TTL_SECONDS)
+
+
+async def _post_shutdown(application) -> None:
+    stop_event = application.bot_data.pop("cleanup_stop_event", None)
+    task = application.bot_data.pop("cleanup_task", None)
+    if stop_event is not None:
+        stop_event.set()
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def main() -> None:
@@ -34,7 +58,7 @@ def main() -> None:
     except ValueError as exc:
         raise RuntimeError("PORT must be a valid integer.") from exc
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = (ApplicationBuilder().token(BOT_TOKEN).post_init(_post_init).post_shutdown(_post_shutdown).build())
     register_handlers(application)
 
     webhook_url = f"{RENDER_EXTERNAL_URL}/{WEBHOOK_PATH}"

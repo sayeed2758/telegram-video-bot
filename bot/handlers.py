@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 
 from bot.config import TERABOX_API_KEY, TERABOX_COOKIE, TERABOX_NDUS
+from bot.error_messages import classify_resolver_error
 from bot.keyboards import (
     error_keyboard,
     file_keyboard,
@@ -288,28 +289,22 @@ async def process_url(
         return
 
     reason = result.message
-
-    lowered = reason.lower()
+    lowered = str(reason or "").lower()
 
     if "password required" in lowered:
         context.user_data["awaiting_password"] = True
         text = (
-            "🔐 <b>Password required.</b>\n\n"
-            "This TeraBox share is asking for an extraction/password code.\n\n"
+            "🔐 <b>Password Required</b>\n\n"
+            "This TeraBox share is protected by a password.\n\n"
             "✍️ Send the share password here and I will retry the same link."
         )
-    elif "verification required" in lowered or "need verify" in lowered:
-        text = (
-            "🛡️ <b>TeraBox verification required.</b>\n\n"
-            "TeraBox is asking the bot for a verified session for this share.\n\n"
-            "🔐 A valid TeraBox session may be required.\n\n"
-            "⚡ I stopped the check early instead of waiting on multiple third-party resolvers.\n\n"
-            "⚠️ Never send your cookie/token in Telegram or GitHub."
-        )
     else:
+        title, friendly = classify_resolver_error(reason)
         text = (
-            "❌ <b>Could not process this TeraBox link.</b>\n\n"
-            f"Reason: {reason}"
+            f"<b>{title}</b>\n\n"
+            f"{friendly}\n\n"
+            "🔄 <b>Retry</b> to try the same link again.\n"
+            "🛠️ <b>Help</b> if the problem continues."
         )
 
     try:

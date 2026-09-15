@@ -32,7 +32,10 @@ PLAYTERABOX_RETRY_DELAYS = (0.75, 1.5, 2.5)
 
 # Temporary API failures are retried internally. The user should not have to
 # press Retry just because the first API request timed out.
-PLAYTERABOX_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+PLAYTERABOX_RETRYABLE_STATUS_CODES = {408, 425, 500, 502, 503, 504}
+PLAYTERABOX_API_MIN_INTERVAL = 1.5
+_PLAYTERABOX_API_LOCK = asyncio.Lock()
+_PLAYTERABOX_LAST_CALL_AT = 0.0
 
 SHARE_LIST_HOSTS = (
     "www.terabox.app",
@@ -294,74 +297,85 @@ async def _playterabox_api_resolve(
     response = None
     last_error = "PlayTeraBox API request failed."
 
-    for attempt in range(1, PLAYTERABOX_API_ATTEMPTS + 1):
-        try:
-            response = await client.get(
-                TERABOX_API_URL,
-                params={"secret": TERABOX_API_KEY, "url": share_url},
-                headers={"Accept": "application/json"},
-            )
-        except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
-            last_error = f"PlayTeraBox API request timed out ({exc.__class__.__name__})."
-            logger.warning(
-                "PlayTeraBox API temporary timeout on attempt %s/%s: %s",
-                attempt,
-                PLAYTERABOX_API_ATTEMPTS,
-                exc.__class__.__name__,
-            )
-            if attempt < PLAYTERABOX_API_ATTEMPTS:
-                await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
-                continue
-            return ResolveResult(False, [], last_error)
-        except httpx.HTTPError as exc:
-            last_error = f"PlayTeraBox API request failed: {exc.__class__.__name__}"
-            logger.warning(
-                "PlayTeraBox API request failed on attempt %s/%s: %s",
-                attempt,
-                PLAYTERABOX_API_ATTEMPTS,
-                exc.__class__.__name__,
-            )
-            if attempt < PLAYTERABOX_API_ATTEMPTS:
-                await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
-                continue
-            return ResolveResult(False, [], last_error)
+    # PlayTeraBox can return HTTP 429 even when credits are available.
+    # Serialize provider calls and keep a small gap between requests so two
+    # users arriving together do not trigger the provider's burst limiter.
+    global _PLAYTERABOX_LAST_CALL_AT
+    async with _PLAYTERABOX_API_LOCK:
+        for attempt in range(1, PLAYTERABOX_API_ATTEMPTS + 1):
+            wait_for_slot = PLAYTERABOX_API_MIN_INTERVAL - (time.monotonic() - _PLAYTERABOX_LAST_CALL_AT)
+            if wait_for_slot > 0:
+                await asyncio.sleep(wait_for_slot)
 
-        logger.info(
-            "PlayTeraBox API GET /api/proxy -> HTTP %s (attempt %s/%s)",
-            response.status_code,
-            attempt,
-            PLAYTERABOX_API_ATTEMPTS,
-        )
-
-        if response.status_code in PLAYTERABOX_RETRYABLE_STATUS_CODES and attempt < PLAYTERABOX_API_ATTEMPTS:
-            retry_after = response.headers.get("Retry-After", "")
-            # Only short provider-recommended delays are used here. The goal
-            # is to absorb transient failures inside one user request.
             try:
-                delay = min(5.0, max(0.5, float(retry_after))) if retry_after else PLAYTERABOX_RETRY_DELAYS[attempt - 1]
-            except (TypeError, ValueError):
-                delay = PLAYTERABOX_RETRY_DELAYS[attempt - 1]
-            await asyncio.sleep(delay)
-            continue
+                _PLAYTERABOX_LAST_CALL_AT = time.monotonic()
+                response = await client.get(
+                    TERABOX_API_URL,
+                    params={"secret": TERABOX_API_KEY, "url": share_url},
+                    headers={"Accept": "application/json"},
+                )
+            except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                last_error = f"PlayTeraBox API request timed out ({exc.__class__.__name__})."
+                logger.warning(
+                    "PlayTeraBox API temporary timeout on attempt %s/%s: %s",
+                    attempt,
+                    PLAYTERABOX_API_ATTEMPTS,
+                    exc.__class__.__name__,
+                )
+                if attempt < PLAYTERABOX_API_ATTEMPTS:
+                    await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
+                    continue
+                return ResolveResult(False, [], last_error)
+            except httpx.HTTPError as exc:
+                last_error = f"PlayTeraBox API request failed: {exc.__class__.__name__}"
+                logger.warning(
+                    "PlayTeraBox API request failed on attempt %s/%s: %s",
+                    attempt,
+                    PLAYTERABOX_API_ATTEMPTS,
+                    exc.__class__.__name__,
+                )
+                if attempt < PLAYTERABOX_API_ATTEMPTS:
+                    await asyncio.sleep(PLAYTERABOX_RETRY_DELAYS[attempt - 1])
+                    continue
+                return ResolveResult(False, [], last_error)
 
-        break
+            logger.info(
+                "PlayTeraBox API GET /api/proxy -> HTTP %s (attempt %s/%s)",
+                response.status_code,
+                attempt,
+                PLAYTERABOX_API_ATTEMPTS,
+            )
+
+            # IMPORTANT: never retry HTTP 429. Four rapid retries were making
+            # the provider's rate-limit response worse. Enter local cooldown
+            # immediately and tell the user exactly what is happening.
+            if response.status_code == 429:
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    wait_seconds = max(1, int(float(retry_after)))
+                except (TypeError, ValueError):
+                    wait_seconds = 60
+                global _PLAYTERABOX_RATE_LIMIT_UNTIL
+                _PLAYTERABOX_RATE_LIMIT_UNTIL = time.monotonic() + wait_seconds
+                return ResolveResult(
+                    False,
+                    [],
+                    f"PlayTeraBox API is rate-limiting requests. Please wait about {wait_seconds} seconds and try again.",
+                )
+
+            if response.status_code in PLAYTERABOX_RETRYABLE_STATUS_CODES and attempt < PLAYTERABOX_API_ATTEMPTS:
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    delay = min(5.0, max(0.5, float(retry_after))) if retry_after else PLAYTERABOX_RETRY_DELAYS[attempt - 1]
+                except (TypeError, ValueError):
+                    delay = PLAYTERABOX_RETRY_DELAYS[attempt - 1]
+                await asyncio.sleep(delay)
+                continue
+
+            break
 
     if response is None:
         return ResolveResult(False, [], last_error)
-
-    if response.status_code == 429:
-        retry_after = response.headers.get("Retry-After", "")
-        try:
-            wait_seconds = max(1, int(float(retry_after)))
-        except (TypeError, ValueError):
-            wait_seconds = 60
-        global _PLAYTERABOX_RATE_LIMIT_UNTIL
-        _PLAYTERABOX_RATE_LIMIT_UNTIL = time.monotonic() + wait_seconds
-        return ResolveResult(
-            False,
-            [],
-            f"PlayTeraBox API is rate-limiting requests. Please wait about {wait_seconds} seconds and try again.",
-        )
 
     try:
         payload = response.json()
@@ -393,10 +407,6 @@ async def _playterabox_api_resolve(
 
     files = _parse_files(payload)
 
-    # Exact /api/proxy response shape is {status, total_files, list:[...]}.
-    # _parse_files already handles that list, including download_link and
-    # stream_url. The extra candidates below keep compatibility with possible
-    # wrapper objects returned by the API in the future.
     candidates = []
     if isinstance(payload, dict):
         for key in ("data", "result", "response", "file", "files", "dataList"):

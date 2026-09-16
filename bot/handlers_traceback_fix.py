@@ -1328,6 +1328,7 @@ async def process_url(
             first_direct_url,
             first_stream_url,
             first_file.quality_urls if first_file else None,
+            context.user_data.get("last_url"),
         )
 
         if first_file and first_file.thumbnail:
@@ -1928,6 +1929,7 @@ async def callback_handler(
                 direct_url,
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
+                context.user_data.get("last_url"),
             ),
         )
         return
@@ -2013,6 +2015,7 @@ async def callback_handler(
                 direct_url,
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
+                context.user_data.get("last_url"),
             ),
         )
         return

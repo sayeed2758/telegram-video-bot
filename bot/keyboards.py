@@ -94,6 +94,7 @@ def file_keyboard(
     direct_url: str | None,
     stream_url: str | None = None,
     quality_urls: dict[str, str] | None = None,
+    original_url: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -109,9 +110,12 @@ def file_keyboard(
     if direct_url:
         rows.append([InlineKeyboardButton("📥 Download File", url=direct_url)])
 
+    if isinstance(original_url, str) and original_url.strip():
+        rows.append([InlineKeyboardButton("🔗 Original Link", url=original_url.strip())])
+
     rows.append(
         [
-            InlineKeyboardButton("🔄 Process Again", callback_data="retry"),
+            InlineKeyboardButton("🔄 Refresh Link", callback_data="retry"),
             InlineKeyboardButton("🏠 Start", callback_data="start"),
         ]
     )
@@ -178,6 +182,7 @@ def selected_file_keyboard(
     direct_url: str | None,
     stream_url: str | None,
     quality_urls: dict[str, str] | None = None,
+    original_url: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -193,10 +198,13 @@ def selected_file_keyboard(
     if direct_url:
         rows.append([InlineKeyboardButton("📥 Download File", url=direct_url)])
 
+    if isinstance(original_url, str) and original_url.strip():
+        rows.append([InlineKeyboardButton("🔗 Original Link", url=original_url.strip())])
+
     rows.append([InlineKeyboardButton("📂 All Files", callback_data="all_files")])
     rows.append(
         [
-            InlineKeyboardButton("🔄 Process Again", callback_data="retry"),
+            InlineKeyboardButton("🔄 Refresh Link", callback_data="retry"),
             InlineKeyboardButton("🏠 Start", callback_data="start"),
         ]
     )

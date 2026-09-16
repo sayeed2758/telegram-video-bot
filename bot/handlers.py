@@ -1,6 +1,5 @@
 from pathlib import Path
 from html import escape
-import logging
 from time import perf_counter
 import asyncio
 
@@ -50,13 +49,11 @@ from bot.profile import build_profile_text
 from bot.queue_manager import RESOLVE_QUEUE
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
 from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
-from bot.resolver import ResolveResult, resolve_link
+from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, get_user_record, mark_inactive, register_user, search_users
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 from bot.cleanup import purge_expired_history
-
-logger = logging.getLogger(__name__)
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -1161,27 +1158,11 @@ async def process_url(
                 pass
 
     progress_task = asyncio.create_task(_progress_loop())
-    result = None
-    cache_hit = False
     try:
-        try:
-            result, cache_hit = await get_or_resolve(
-                cache_key(url, password),
-                lambda: resolve_link(url, password=password),
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            # Phase 1 stability guard: an unexpected resolver/cache exception
-            # must never leave the user stuck on "Processing..." or crash the
-            # handler before the queue slot is released.
-            logger.exception("Unexpected resolver failure for a user request.")
-            result = ResolveResult(
-                False,
-                [],
-                "The resolver encountered a temporary internal error. Please retry in a moment.",
-            )
-            cache_hit = False
+        result, cache_hit = await get_or_resolve(
+            cache_key(url, password),
+            lambda: resolve_link(url, password=password),
+        )
     finally:
         progress_stop.set()
         progress_task.cancel()
@@ -1347,6 +1328,7 @@ async def process_url(
             first_direct_url,
             first_stream_url,
             first_file.quality_urls if first_file else None,
+            context.user_data.get("last_url"),
         )
 
         if first_file and first_file.thumbnail:
@@ -1947,6 +1929,7 @@ async def callback_handler(
                 direct_url,
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
+                context.user_data.get("last_url"),
             ),
         )
         return
@@ -2032,6 +2015,7 @@ async def callback_handler(
                 direct_url,
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
+                context.user_data.get("last_url"),
             ),
         )
         return

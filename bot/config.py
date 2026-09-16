@@ -36,21 +36,6 @@ TERABOX_LEGACY_API_URL = os.getenv(
     "https://api.playterabox.com/api/proxy",
 ).strip().rstrip("/")
 
-# Phase 2 alternate: Telegram MTProto user session for archive uploads.
-# Keep these secrets only in Render environment variables.
-try:
-    TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0").strip() or "0")
-except ValueError:
-    TELEGRAM_API_ID = 0
-TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "").strip()
-TELEGRAM_SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "").strip()
-TELEGRAM_SESSION_STRING = TELEGRAM_SESSION_STRING.strip().strip(chr(34)).strip(chr(39))
-TELEGRAM_SESSION_STRING = "".join(TELEGRAM_SESSION_STRING.split())
-TELEGRAM_SESSION_STRING += "=" * (-len(TELEGRAM_SESSION_STRING) % 4)
-
-# Private Telegram archive channel used for media delivery.
-ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
-
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.

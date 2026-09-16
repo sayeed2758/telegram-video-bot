@@ -301,21 +301,8 @@ def _file_from_dict(item: dict) -> ResolvedFile | None:
         or item.get("streamUrl")
         or item.get("m3u8")
         or item.get("hls")
-        or item.get("play_url")
-        or item.get("playback_url")
-        or item.get("video_url")
         or _pick_fast_stream_url(item.get("fast_stream_url"))
     )
-
-    # Some legacy/provider responses expose the usable media URL under a
-    # generic `url`/`link` field. Accept only URL-looking strings here so we
-    # do not accidentally treat metadata as a media source.
-    if not direct and not stream:
-        for key in ("url", "link", "play_url", "playback_url", "video_url"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip().lower().startswith(("http://", "https://")):
-                stream = value.strip()
-                break
 
     return ResolvedFile(
         name=str(name),

@@ -54,6 +54,7 @@ from bot.users import get_broadcast_users, get_user_record, mark_inactive, regis
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 from bot.cleanup import purge_expired_history
+from bot.archive_channel import get_archive_channel_id, inspect_archive_channel, send_phase1_test
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -601,12 +602,14 @@ def _admin_status_text() -> str:
     maintenance = "🛑 ON" if is_maintenance() else "🟢 OFF"
     api = "✅ Configured" if TERABOX_API_KEY else "❌ Missing"
     webhook_secret = "✅ Configured" if __import__("bot.config", fromlist=["WEBHOOK_SECRET_TOKEN"]).WEBHOOK_SECRET_TOKEN else "⚠️ Not set"
+    archive = "✅ Configured" if get_archive_channel_id() is not None else "❌ Missing"
     return (
         "🩺 <b>System Status</b>\n\n"
         f"🏷️ Version: <b>{APP_VERSION}</b>\n"
         f"⏱️ Uptime: <b>{escape(format_uptime())}</b>\n"
         f"🛠️ Maintenance: <b>{maintenance}</b>\n"
         f"⚡ PlayTeraBox API: <b>{api}</b>\n"
+        f"📦 Archive channel: <b>{archive}</b>\n"
         f"🔐 Webhook secret: <b>{webhook_secret}</b>\n"
         f"🚦 Queue: <b>{snapshot['active']}</b> active / <b>{snapshot['waiting']}</b> waiting\n"
         f"🎯 Concurrency: <b>{snapshot['max_concurrent']}</b>\n"
@@ -896,6 +899,74 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     draft = " ".join(context.args).strip() if context.args else None
     await _start_broadcast(message, context, draft)
+
+
+async def channelstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+
+    info = await inspect_archive_channel(context.bot)
+    if not info.get("configured"):
+        text = (
+            "📦 <b>Archive Channel</b>\n\n"
+            "❌ <b>Not configured.</b>\n\n"
+            "Set <code>ARCHIVE_CHANNEL_ID</code> in Render Environment Variables "
+            "after creating the private channel and adding this bot as an administrator."
+        )
+    elif not info.get("ok"):
+        reason = escape(str(info.get("reason", "Access check failed.")))
+        text = (
+            "📦 <b>Archive Channel</b>\n\n"
+            f"❌ <b>Not ready.</b>\n"
+            f"🆔 ID: <code>{info.get('channel_id')}</code>\n"
+            f"⚠️ {reason}\n\n"
+            "Make sure the bot is an administrator in the private channel and can post messages."
+        )
+    else:
+        username = str(info.get("username") or "")
+        username_line = f"\n🔗 Username: <code>@{escape(username)}</code>" if username else ""
+        text = (
+            "📦 <b>Archive Channel</b>\n\n"
+            "✅ <b>Connection ready.</b>\n"
+            f"🏷️ Title: <b>{escape(str(info.get('title', 'Unknown')))}</b>\n"
+            f"🆔 ID: <code>{info.get('channel_id')}</code>"
+            f"{username_line}\n"
+            f"👤 Bot status: <b>{escape(str(info.get('status', 'unknown')))}</b>\n"
+            "✍️ Posting: <b>Available</b>\n\n"
+            "Use <code>/channeltest</code> to send a temporary test message."
+        )
+    await message.reply_text(text, parse_mode="HTML")
+
+
+async def channeltest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+
+    result = await send_phase1_test(context.bot)
+    if result.get("ok"):
+        await message.reply_text(
+            "✅ <b>Phase 1 channel test passed.</b>\n\n"
+            "The bot successfully posted to the private archive channel.\n"
+            "The temporary test message will be cleaned up automatically.",
+            parse_mode="HTML",
+        )
+        return
+
+    reason = escape(str(result.get("reason", "Channel test failed.")))
+    await message.reply_text(
+        "❌ <b>Phase 1 channel test failed.</b>\n\n"
+        f"⚠️ {reason}\n\n"
+        "Check ARCHIVE_CHANNEL_ID and the bot's administrator permissions in the private channel.",
+        parse_mode="HTML",
+    )
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2094,6 +2165,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("analytics", analytics_command))
     application.add_handler(CommandHandler("queue", queue_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("channelstatus", channelstatus_command))
+    application.add_handler(CommandHandler("channeltest", channeltest_command))
     application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))

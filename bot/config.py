@@ -45,6 +45,10 @@ RATE_LIMIT_TIMEZONE = os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() o
 # Phase 33: optional production hardening.
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
 
+# Phase 1: private Telegram archive channel used for temporary media delivery.
+# Keep this empty until the private channel is created and the bot is added as admin.
+ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
+
 try:
     MAX_MESSAGE_LENGTH = max(1000, min(int(os.getenv("MAX_MESSAGE_LENGTH", "12000").strip()), 50000))
 except ValueError:

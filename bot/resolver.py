@@ -330,14 +330,11 @@ async def _playterabox_api_resolve(
     client: httpx.AsyncClient,
     share_url: str,
 ) -> ResolveResult:
-    """Resolve a TeraBox share using the owner's PlayTeraBox subscription.
+    """Resolve a TeraBox share through the current ApiDash TeraBox API.
 
-    The user's active API Playground currently exposes the legacy GET
-    /api/proxy endpoint with `secret` and `url` query parameters, so that is
-    the primary request path. The newer ApiDash POST endpoint is kept as a
-    compatibility fallback when the legacy route is unavailable.
-
-    The API key is never logged or embedded in the bot code.
+    Primary endpoint: POST /api/terabox-pro with ApiDash-Key header.
+    The older GET /api/proxy route is retained only as a compatibility
+    fallback for endpoint-shape errors (404/405).
     """
     if not TERABOX_API_KEY:
         return ResolveResult(False, [], "PlayTeraBox API key is not configured.")
@@ -353,38 +350,29 @@ async def _playterabox_api_resolve(
             f"PlayTeraBox API is rate-limiting requests. Please wait about {remaining} seconds and try again.",
         )
 
-    # This function is intentionally defined in this file and called here so
-    # Render cannot hit the previous NameError seen in production logs.
     api_share_url = _canonical_api_share_url(share_url)
 
-    # Primary: the endpoint shown by the user's active API Playground.
+    # Current ApiDash documentation: POST /api/terabox-pro + ApiDash-Key.
     endpoints = [
-        (TERABOX_LEGACY_API_URL or "https://api.playterabox.com/api/proxy", "legacy"),
+        (TERABOX_API_URL or "https://api.playterabox.com/api/terabox-pro", "current"),
     ]
 
-    # Compatibility fallback: current ApiDash documentation also exposes the
-    # newer POST endpoint. Use it only if the active GET route is unavailable.
-    if TERABOX_API_URL and TERABOX_API_URL.rstrip("/") != endpoints[0][0].rstrip("/"):
-        endpoints.append((TERABOX_API_URL, "current"))
+    # Keep the legacy playground endpoint as a compatibility fallback only.
+    legacy = TERABOX_LEGACY_API_URL or "https://api.playterabox.com/api/proxy"
+    if legacy.rstrip("/") != endpoints[0][0].rstrip("/"):
+        endpoints.append((legacy, "legacy"))
 
     for endpoint, endpoint_kind in endpoints:
         response = None
         last_error = "PlayTeraBox API request failed."
+        # Two attempts for transient 5xx/transport errors. 429 is handled
+        # explicitly and is never hammered with immediate retries.
         attempts = 2
 
         for attempt in range(1, attempts + 1):
             await _wait_for_playterabox_slot()
             try:
-                if endpoint_kind == "legacy":
-                    response = await client.get(
-                        endpoint,
-                        params={"secret": TERABOX_API_KEY, "url": api_share_url},
-                        headers={
-                            "Accept": "application/json",
-                            "secret": TERABOX_API_KEY,
-                        },
-                    )
-                else:
+                if endpoint_kind == "current":
                     response = await client.post(
                         endpoint,
                         json={"url": api_share_url},
@@ -394,11 +382,20 @@ async def _playterabox_api_resolve(
                             "ApiDash-Key": TERABOX_API_KEY,
                         },
                     )
+                else:
+                    response = await client.get(
+                        endpoint,
+                        params={"secret": TERABOX_API_KEY, "url": api_share_url},
+                        headers={
+                            "Accept": "application/json",
+                            "secret": TERABOX_API_KEY,
+                        },
+                    )
             except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
                 last_error = f"PlayTeraBox API request timed out ({exc.__class__.__name__})."
                 logger.warning(
                     "PlayTeraBox %s API timeout on attempt %s/%s: %s",
-                    endpoint_kind, attempt, attempts, exc.__class__.__name__
+                    endpoint_kind, attempt, attempts, exc.__class__.__name__,
                 )
                 if attempt < attempts:
                     await asyncio.sleep(0.75)
@@ -409,7 +406,7 @@ async def _playterabox_api_resolve(
                 last_error = f"PlayTeraBox API request failed: {exc.__class__.__name__}"
                 logger.warning(
                     "PlayTeraBox %s API transport failure on attempt %s/%s: %s",
-                    endpoint_kind, attempt, attempts, exc.__class__.__name__
+                    endpoint_kind, attempt, attempts, exc.__class__.__name__,
                 )
                 if attempt < attempts:
                     await asyncio.sleep(0.75)
@@ -419,18 +416,23 @@ async def _playterabox_api_resolve(
 
             logger.info(
                 "PlayTeraBox %s API -> HTTP %s (attempt %s/%s)",
-                endpoint_kind, response.status_code, attempt, attempts
+                endpoint_kind, response.status_code, attempt, attempts,
             )
 
-            # Never hammer a rate-limited endpoint.
             if response.status_code == 429:
                 retry_after = response.headers.get("Retry-After", "")
                 try:
-                    wait_seconds = max(30, int(float(retry_after)))
+                    wait_seconds = max(5, int(float(retry_after)))
                 except (TypeError, ValueError):
-                    wait_seconds = 60
+                    wait_seconds = 15
                 _PLAYTERABOX_RATE_LIMIT_UNTIL = time.monotonic() + wait_seconds
-                logger.warning("PlayTeraBox API rate limited (429); cooldown=%ss.", wait_seconds)
+                logger.warning(
+                    "PlayTeraBox %s API rate limited (429); cooldown=%ss.",
+                    endpoint_kind, wait_seconds,
+                )
+                # A 429 from the current endpoint is a provider-side state;
+                # do not repeatedly hammer it. Do not automatically switch to
+                # the legacy endpoint unless the current route is missing.
                 return ResolveResult(
                     False,
                     [],
@@ -443,15 +445,17 @@ async def _playterabox_api_resolve(
             break
 
         if response is None:
-            if endpoint_kind == "legacy":
-                return ResolveResult(False, [], last_error)
-            continue
+            if endpoint_kind == "current":
+                # If the current endpoint failed at the transport layer, the
+                # legacy compatibility route can still be tried once.
+                continue
+            return ResolveResult(False, [], last_error)
 
-        # Only endpoint-shape errors trigger the compatibility fallback.
+        # Only endpoint-shape errors trigger compatibility fallback.
         if response.status_code in {404, 405}:
             logger.warning(
-                "PlayTeraBox %s endpoint returned HTTP %s; trying next compatibility endpoint.",
-                endpoint_kind, response.status_code
+                "PlayTeraBox %s endpoint returned HTTP %s; trying compatibility endpoint.",
+                endpoint_kind, response.status_code,
             )
             continue
 
@@ -469,49 +473,19 @@ async def _playterabox_api_resolve(
         if response.status_code >= 400:
             reason = None
             if isinstance(payload, dict):
-                reason = payload.get("message") or payload.get("error") or payload.get("detail") or payload.get("errmsg")
+                reason = payload.get("message") or payload.get("error") or payload.get("detail")
             return ResolveResult(False, [], str(reason or f"PlayTeraBox API returned HTTP {response.status_code}."))
 
-        if isinstance(payload, dict):
-            status = str(payload.get("status", "")).lower().strip()
-            if status and status not in {"success", "ok", "true"}:
-                reason = payload.get("message") or payload.get("error") or payload.get("detail") or payload.get("errmsg")
-                if reason:
-                    return ResolveResult(False, [], str(reason))
-
         files = _parse_files(payload)
+        if files:
+            return ResolveResult(True, files, "Resolved through PlayTeraBox API.")
 
-        # Accept provider variants that wrap the file object one level deeper.
-        if isinstance(payload, dict):
-            for key in ("data", "result", "response", "file", "files", "dataList"):
-                value = payload.get(key)
-                if isinstance(value, dict):
-                    one = _file_from_dict(value)
-                    if one:
-                        files.append(one)
-                    files.extend(_parse_files(value))
-                elif isinstance(value, list):
-                    files.extend(_parse_files(value))
+        status_value = payload.get("status") if isinstance(payload, dict) else None
+        if status_value not in {None, "success", True}:
+            return ResolveResult(False, [], f"PlayTeraBox API returned status: {status_value}.")
+        return ResolveResult(False, [], "PlayTeraBox API returned no playable files.")
 
-        unique = []
-        seen = set()
-        for item in files:
-            key = (item.name, item.direct_url or "", item.stream_url or "")
-            if key not in seen:
-                seen.add(key)
-                unique.append(item)
-
-        if not unique:
-            reason = None
-            if isinstance(payload, dict):
-                reason = payload.get("message") or payload.get("error") or payload.get("detail") or payload.get("errmsg")
-            return ResolveResult(False, [], str(reason or "PlayTeraBox API returned no usable file data."))
-
-        _PLAYTERABOX_RATE_LIMIT_UNTIL = 0.0
-        return ResolveResult(True, unique, f"Found {len(unique)} file(s) via PlayTeraBox API.")
-
-    return ResolveResult(False, [], "PlayTeraBox API endpoint is unavailable.")
-
+    return ResolveResult(False, [], last_error)
 
 async def _proxy_resolve(client: httpx.AsyncClient, code: str, password: str | None = None) -> ResolveResult:
     if not TERABOX_PROXY_URL:

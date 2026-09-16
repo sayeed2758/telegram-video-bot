@@ -26,6 +26,13 @@ TERABOX_TBX_PROXY_URL = os.getenv("TERABOX_TBX_PROXY_URL", "").strip()
 TERABOX_API_KEY = os.getenv("TERABOX_API_KEY", "").strip()
 TERABOX_API_URL = os.getenv(
     "TERABOX_API_URL",
+    "https://api.playterabox.com/api/terabox-pro",
+).strip().rstrip("/")
+
+# Optional legacy PlayTeraBox endpoint. The current ApiDash documentation
+# uses POST /api/terabox-pro with the ApiDash-Key header.
+TERABOX_LEGACY_API_URL = os.getenv(
+    "TERABOX_LEGACY_API_URL",
     "https://api.playterabox.com/api/proxy",
 ).strip().rstrip("/")
 

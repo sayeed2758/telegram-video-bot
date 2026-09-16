@@ -15,7 +15,7 @@ from telegram import Bot, Message
 from telegram.error import TelegramError
 
 from bot.archive_channel import get_archive_channel_id
-from bot.mtproto_archive import archive_video_from_url
+from bot.mtproto_archive import upload_url_to_archive
 from bot.resolver import ResolvedFile
 
 logger = logging.getLogger(__name__)
@@ -103,12 +103,14 @@ async def deliver_file(
     try:
         # Upload through the MTProto Telegram account.
         # This avoids Telegram Bot API server-side URL fetching.
-        channel_message = await archive_video_from_url(
-            video_url=source_url,
+        upload_result = await upload_url_to_archive(
+            source_url=source_url,
             filename=item.name or "video.mp4",
             caption=caption,
         )
-        channel_message_id = int(channel_message.id)
+        if not upload_result.ok:
+            raise RuntimeError(upload_result.error or "MTProto archive upload failed")
+        channel_message_id = int(upload_result.channel_message_id)
     except Exception as exc:
         logger.warning("MTProto archive upload failed for %s: %s", item.name, exc)
         return DeliveryResult(False, error=f"Archive upload failed: {exc}")

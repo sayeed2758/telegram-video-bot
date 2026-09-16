@@ -36,6 +36,18 @@ TERABOX_LEGACY_API_URL = os.getenv(
     "https://api.playterabox.com/api/proxy",
 ).strip().rstrip("/")
 
+# Phase 2 alternate: Telegram MTProto user session for archive uploads.
+# Keep these secrets only in Render environment variables.
+try:
+    TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "0").strip() or "0")
+except ValueError:
+    TELEGRAM_API_ID = 0
+TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "").strip()
+TELEGRAM_SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING", "").strip()
+
+# Private Telegram archive channel used for media delivery.
+ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
+
 # Optional comma-separated public gateway URLs. If empty, Phase 9 uses
 # two public gateway formats documented by their respective projects.
 # These are fallbacks only; the bot does not send cookies to them.
@@ -44,10 +56,6 @@ RATE_LIMIT_TIMEZONE = os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() o
 
 # Phase 33: optional production hardening.
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
-
-# Phase 1: private Telegram archive channel used for temporary media delivery.
-# Keep this empty until the private channel is created and the bot is added as admin.
-ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
 
 try:
     MAX_MESSAGE_LENGTH = max(1000, min(int(os.getenv("MAX_MESSAGE_LENGTH", "12000").strip()), 50000))

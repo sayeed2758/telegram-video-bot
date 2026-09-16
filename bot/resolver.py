@@ -72,6 +72,43 @@ class ResolveResult:
     message: str
 
 
+def _canonical_api_share_url(url: str) -> str:
+    """Normalize supported TeraBox mirror shares for the API provider.
+
+    Some supported share domains are mirrors of a normal TeraBox share.
+    The PlayTeraBox API accepts the canonical 1024terabox.com share form,
+    so preserve the original /s/<code> and only change the hostname.
+    """
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return url
+
+    host = (parsed.hostname or "").lower()
+    mirror_hosts = {
+        "teraboxshare.com",
+        "www.teraboxshare.com",
+        "teraboxlink.com",
+        "www.teraboxlink.com",
+        "terafileshare.com",
+        "www.terafileshare.com",
+        "terasharefile.com",
+        "www.terasharefile.com",
+        "terasharelink.com",
+        "www.terasharelink.com",
+    }
+
+    if host not in mirror_hosts:
+        return url
+
+    match = re.search(r"/s/([^/?#]+)", parsed.path, re.I)
+    if not match:
+        return url
+
+    code = match.group(1)
+    return f"https://1024terabox.com/s/{code}"
+
+
 def _short_code(url: str) -> str | None:
     path = urlparse(url).path.rstrip("/")
     match = re.search(r"/s/([^/]+)", path, re.I)

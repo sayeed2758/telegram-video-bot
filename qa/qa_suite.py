@@ -30,13 +30,14 @@ EXPECTED_FILES = [
     "bot/platforms.py",
     "bot/users.py",
     "bot/error_messages.py",
+    "bot/archive_channel.py",
     "bot/system_control.py",
 ]
 
 COMMANDS = {
     "start", "help", "session", "mylimit", "myid", "profile", "admin",
     "limit", "setlimit", "resetlimit", "broadcast", "analytics", "queue",
-    "status", "maintenance", "history", "clearhistory",
+    "status", "channelstatus", "channeltest", "maintenance", "history", "clearhistory",
 }
 
 
@@ -168,6 +169,18 @@ def check_system_control() -> None:
     print("PASS 8/8: maintenance/status controls verified")
 
 
+def check_archive_channel_helpers() -> None:
+    import ast as _ast
+
+    source = (BOT / "archive_channel.py").read_text(encoding="utf-8")
+    tree = _ast.parse(source)
+    functions = {node.name for node in tree.body if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+    assert {"get_archive_channel_id", "inspect_archive_channel", "send_phase1_test"}.issubset(functions)
+    config = (BOT / "config.py").read_text(encoding="utf-8")
+    assert "ARCHIVE_CHANNEL_ID =" in config
+    print("PASS 9/9: archive-channel configuration/helper structure verified")
+
+
 def main() -> None:
     check_files()
     check_compile()
@@ -177,7 +190,8 @@ def main() -> None:
     asyncio.run(_queue_check())
     check_rate_limit()
     check_system_control()
-    print("\nQA RESULT: PASS — Phase 35 static + subsystem checks completed.")
+    check_archive_channel_helpers()
+    print("\nQA RESULT: PASS — Phase 1 archive-channel static + subsystem checks completed.")
     print("Live Telegram/Render tests still require deployment and real users/API calls.")
 
 

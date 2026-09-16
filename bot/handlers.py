@@ -35,6 +35,7 @@ from bot.subscription import (
     expire_subscription,
 )
 from bot.history import clear_history, get_history, get_history_item, record_success
+from bot.media_delivery import deliver_files
 from bot.keyboards import (
     error_keyboard,
     file_keyboard,
@@ -1315,6 +1316,63 @@ async def process_url(
             for item in result.files
         ]
 
+        # Phase 2: deliver resolved videos through the private Telegram archive
+        # channel, then copy the Telegram-native video message to the requesting user.
+        # This avoids permanent MP4 storage on the Render filesystem.
+        delivery_results = await deliver_files(
+            context.application.bot,
+            int(message.chat_id),
+            result.files,
+        )
+        delivered_count = sum(1 for item in delivery_results if item.ok)
+        failed_count = len(delivery_results) - delivered_count
+
+        if delivered_count == 0:
+            error_text = next(
+                (item.error for item in delivery_results if item.error),
+                "The video could not be delivered to Telegram.",
+            )
+            try:
+                await status.edit_text(
+                    "❌ <b>Video Delivery Failed</b>\n\n"
+                    f"{escape(str(error_text)[:700])}\n\n"
+                    "Please try the link again.",
+                    parse_mode="HTML",
+                    reply_markup=error_keyboard(),
+                )
+            except Exception:
+                await message.reply_text(
+                    "❌ <b>Video Delivery Failed</b>\n\n"
+                    f"{escape(str(error_text)[:700])}",
+                    parse_mode="HTML",
+                    reply_markup=error_keyboard(),
+                )
+            return
+
+        summary = (
+            f"✅ <b>{delivered_count} video(s) delivered.</b>"
+            if failed_count == 0
+            else f"✅ <b>{delivered_count} delivered</b> • ⚠️ <b>{failed_count} failed</b>"
+        )
+        try:
+            await status.edit_text(
+                "🎬 <b>Video Delivery Complete</b>\n\n"
+                f"{summary}\n\n"
+                "☁️ The video is stored by Telegram; the bot does not keep a permanent MP4 on the server.\n"
+                "⚠️ Each delivered video is scheduled for automatic deletion after 1 hour in the user's chat.",
+                parse_mode="HTML",
+                reply_markup=welcome_keyboard(),
+            )
+        except Exception:
+            await message.reply_text(
+                "🎬 <b>Video Delivery Complete</b>\n\n"
+                f"{summary}",
+                parse_mode="HTML",
+                reply_markup=welcome_keyboard(),
+            )
+
+        # Phase 2 intentionally leaves expiry records/cleanup for the next phase.
+        # Keep the existing result UI and resolver state intact for compatibility.
         if len(result.files) > 1:
             lines = [
                 "🎬 <b>Videos Ready</b>",

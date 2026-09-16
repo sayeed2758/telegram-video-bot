@@ -30,14 +30,13 @@ EXPECTED_FILES = [
     "bot/platforms.py",
     "bot/users.py",
     "bot/error_messages.py",
-    "bot/archive_channel.py",
     "bot/system_control.py",
 ]
 
 COMMANDS = {
     "start", "help", "session", "mylimit", "myid", "profile", "admin",
     "limit", "setlimit", "resetlimit", "broadcast", "analytics", "queue",
-    "status", "channelstatus", "channeltest", "maintenance", "history", "clearhistory",
+    "status", "maintenance", "history", "clearhistory",
 }
 
 
@@ -156,6 +155,16 @@ def check_rate_limit() -> None:
     print("PASS 7/8: daily quota enforcement verified")
 
 
+def check_playback_ui() -> None:
+    keyboards = (BOT / "keyboards.py").read_text(encoding="utf-8")
+    handlers = (BOT / "handlers.py").read_text(encoding="utf-8")
+    assert "Original Link" in keyboards
+    assert "Refresh Link" in keyboards
+    assert 'context.user_data.get("last_url")' in handlers
+    assert "original_url" in keyboards
+    print("PASS 8/9: playback result UI provides original-link + refresh actions")
+
+
 def check_system_control() -> None:
     sys.path.insert(0, str(ROOT))
     from bot.system_control import format_uptime, is_maintenance, set_maintenance
@@ -166,19 +175,7 @@ def check_system_control() -> None:
     assert is_maintenance() is False
     set_maintenance(original)
     assert format_uptime()
-    print("PASS 8/8: maintenance/status controls verified")
-
-
-def check_archive_channel_helpers() -> None:
-    import ast as _ast
-
-    source = (BOT / "archive_channel.py").read_text(encoding="utf-8")
-    tree = _ast.parse(source)
-    functions = {node.name for node in tree.body if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
-    assert {"get_archive_channel_id", "inspect_archive_channel", "send_phase1_test"}.issubset(functions)
-    config = (BOT / "config.py").read_text(encoding="utf-8")
-    assert "ARCHIVE_CHANNEL_ID =" in config
-    print("PASS 9/9: archive-channel configuration/helper structure verified")
+    print("PASS 9/9: maintenance/status controls verified")
 
 
 def main() -> None:
@@ -189,9 +186,9 @@ def main() -> None:
     asyncio.run(_cache_check())
     asyncio.run(_queue_check())
     check_rate_limit()
+    check_playback_ui()
     check_system_control()
-    check_archive_channel_helpers()
-    print("\nQA RESULT: PASS — Phase 1 archive-channel static + subsystem checks completed.")
+    print("\nQA RESULT: PASS — Phase 2 playback UX + subsystem checks completed.")
     print("Live Telegram/Render tests still require deployment and real users/API calls.")
 
 

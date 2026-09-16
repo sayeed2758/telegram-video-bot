@@ -93,6 +93,44 @@ async def mtproto_configured() -> bool:
     )
 
 
+def _diagnose_session_string(session: str) -> str:
+    """Validate the configured StringSession without logging the secret itself."""
+    normalized = "".join(str(session or "").split())
+    present = bool(normalized)
+    ascii_only = all(ord(ch) < 128 for ch in normalized)
+    length = len(normalized)
+    mod4 = length % 4
+
+    logger.warning(
+        "MTProto session diagnostic: present=%s length=%d ascii_only=%s length_mod_4=%d",
+        present,
+        length,
+        ascii_only,
+        mod4,
+    )
+
+    if not present:
+        raise RuntimeError("TELEGRAM_SESSION_STRING is empty in the running service.")
+    if not ascii_only:
+        raise RuntimeError("TELEGRAM_SESSION_STRING contains non-ASCII characters.")
+
+    try:
+        StringSession(normalized)
+    except Exception as exc:
+        logger.warning(
+            "MTProto session diagnostic: parse_failed type=%s message=%s",
+            type(exc).__name__,
+            str(exc),
+        )
+        raise RuntimeError(
+            "TELEGRAM_SESSION_STRING is present but Telethon cannot parse it. "
+            "Regenerate the session and replace the Render environment value."
+        ) from exc
+
+    logger.warning("MTProto session diagnostic: parse_ok")
+    return normalized
+
+
 async def _get_client() -> TelegramClient:
     global _CLIENT
     if not await mtproto_configured():
@@ -104,8 +142,9 @@ async def _get_client() -> TelegramClient:
 
     async with _CLIENT_LOCK:
         if _CLIENT is None:
+            session_string = _diagnose_session_string(TELEGRAM_SESSION_STRING)
             _CLIENT = TelegramClient(
-                StringSession(TELEGRAM_SESSION_STRING),
+                StringSession(session_string),
                 TELEGRAM_API_ID,
                 TELEGRAM_API_HASH,
                 auto_reconnect=True,

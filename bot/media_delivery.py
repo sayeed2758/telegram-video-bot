@@ -82,9 +82,20 @@ async def deliver_file(
     if not _is_video_file(item):
         return DeliveryResult(False, error="Resolved file is not recognized as a video.")
 
-    direct_url = str(item.direct_url or "").strip()
-    if not direct_url:
-        return DeliveryResult(False, error="No direct video URL was returned by the resolver.")
+    # The legacy PlayTeraBox response can expose the playable media URL as
+    # either a download URL or a stream URL. Prefer a downloadable URL, then
+    # fall back to the stream/quality URL returned by the resolver.
+    source_url = str(item.direct_url or "").strip()
+    if not source_url:
+        source_url = str(item.stream_url or "").strip()
+    if not source_url and item.quality_urls:
+        for quality in ("720p", "480p", "360p", "1080p"):
+            candidate = str(item.quality_urls.get(quality) or "").strip()
+            if candidate:
+                source_url = candidate
+                break
+    if not source_url:
+        return DeliveryResult(False, error="The resolver returned file metadata but no usable media URL.")
 
     caption = _caption(item)
 
@@ -93,7 +104,7 @@ async def deliver_file(
         # No permanent MP4 is written to the Render filesystem.
         channel_message: Message = await bot.send_video(
             chat_id=archive_id,
-            video=direct_url,
+            video=source_url,
             caption=caption,
             parse_mode="HTML",
             supports_streaming=True,

@@ -8,6 +8,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "telegram-webhook").strip("/")
 
+# Phase 9: optional premium HTML5 video player page.
+# Example: https://yourname.github.io/telegram-video-bot/player/
+# Leave empty to keep the existing direct-stream buttons.
+PLAYER_BASE_URL = os.getenv("PLAYER_BASE_URL", "").strip().rstrip("/")
+
 # Optional private TeraBox session. Never put these in GitHub or Telegram.
 TERABOX_COOKIE = os.getenv("TERABOX_COOKIE", "").strip()
 TERABOX_NDUS = os.getenv("TERABOX_NDUS", "").strip()

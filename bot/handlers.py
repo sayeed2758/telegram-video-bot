@@ -1427,6 +1427,8 @@ async def process_url(
             first_stream_url,
             first_file.quality_urls if first_file else None,
             context.user_data.get("last_url"),
+            title=(first_file.name if first_file else None),
+            poster=(first_file.thumbnail if first_file else None),
         )
 
         if first_file and first_file.thumbnail:
@@ -2079,6 +2081,8 @@ async def callback_handler(
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
                 context.user_data.get("last_url"),
+                title=str(item.get("name") or "Video"),
+                poster=item.get("thumbnail"),
             ),
         )
         return
@@ -2108,7 +2112,11 @@ async def callback_handler(
             f"📺 Available: <b>{escape(qualities)}</b>\n\n"
             "Tap a quality to open the corresponding video stream.",
             parse_mode="HTML",
-            reply_markup=quality_keyboard(quality_urls),
+            reply_markup=quality_keyboard(
+                quality_urls,
+                title=str(item.get("name") or "Video"),
+                poster=item.get("thumbnail"),
+            ),
         )
         return
 
@@ -2165,6 +2173,8 @@ async def callback_handler(
                 stream_url,
                 quality_urls if isinstance(quality_urls, dict) else None,
                 context.user_data.get("last_url"),
+                title=str(item.get("name") or "Video"),
+                poster=item.get("thumbnail"),
             ),
         )
         return

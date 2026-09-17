@@ -1,5 +1,8 @@
+from urllib.parse import quote
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
 
+from bot.config import PLAYER_BASE_URL
 from bot.subscription import build_purchase_url
 
 
@@ -45,8 +48,23 @@ def _quality_order(quality_urls: dict[str, str]) -> list[str]:
     ]
 
 
-def quality_keyboard(quality_urls: dict[str, str]) -> InlineKeyboardMarkup:
-    """Create a quality selector from the PlayTeraBox quality map."""
+def _player_url(stream_url: str, *, title: str | None = None, quality: str | None = None, poster: str | None = None) -> str:
+    """Wrap a resolved stream in the optional premium browser player."""
+    if not PLAYER_BASE_URL:
+        return stream_url
+
+    params = [f"src={quote(stream_url, safe='')}"]
+    if title:
+        params.append(f"title={quote(title, safe='')}")
+    if quality:
+        params.append(f"quality={quote(quality, safe='')}")
+    if poster:
+        params.append(f"poster={quote(poster, safe='')}")
+    return PLAYER_BASE_URL + "?" + "&".join(params)
+
+
+def quality_keyboard(quality_urls: dict[str, str], title: str | None = None, poster: str | None = None) -> InlineKeyboardMarkup:
+    """Create a quality selector using the optional premium player."""
     rows: list[list[InlineKeyboardButton]] = []
     ordered = _quality_order(quality_urls)
 
@@ -54,7 +72,10 @@ def quality_keyboard(quality_urls: dict[str, str]) -> InlineKeyboardMarkup:
         url = quality_urls.get(quality)
         if isinstance(url, str) and url.strip():
             rows.append([
-                InlineKeyboardButton(f"📺 {quality} • Play", url=url.strip())
+                InlineKeyboardButton(
+                    f"📺 {quality} • Play",
+                    url=_player_url(url.strip(), title=title, quality=quality, poster=poster),
+                )
             ])
 
     rows.append([InlineKeyboardButton("⬅️ Back to Video", callback_data="quality_back")])
@@ -78,14 +99,26 @@ def _best_quality(quality_urls: dict[str, str] | None) -> tuple[str | None, str 
     return None, None
 
 
-def _play_button(stream_url: str | None, quality_urls: dict[str, str] | None) -> InlineKeyboardButton | None:
+def _play_button(
+    stream_url: str | None,
+    quality_urls: dict[str, str] | None,
+    *,
+    title: str | None = None,
+    poster: str | None = None,
+) -> InlineKeyboardButton | None:
     """Prefer the API stream URL; otherwise fall back to the best quality URL."""
     if isinstance(stream_url, str) and stream_url.strip():
-        return InlineKeyboardButton("▶️ Play Video", url=stream_url.strip())
+        return InlineKeyboardButton(
+            "🎬 Open Premium Player" if PLAYER_BASE_URL else "▶️ Play Video",
+            url=_player_url(stream_url.strip(), title=title, poster=poster),
+        )
 
     quality, url = _best_quality(quality_urls)
     if url:
-        return InlineKeyboardButton(f"▶️ Play {quality}", url=url)
+        return InlineKeyboardButton(
+            f"🎬 Open {quality} Player" if PLAYER_BASE_URL else f"▶️ Play {quality}",
+            url=_player_url(url, title=title, quality=quality, poster=poster),
+        )
 
     return None
 
@@ -95,10 +128,12 @@ def file_keyboard(
     stream_url: str | None = None,
     quality_urls: dict[str, str] | None = None,
     original_url: str | None = None,
+    title: str | None = None,
+    poster: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    play_button = _play_button(stream_url, quality_urls)
+    play_button = _play_button(stream_url, quality_urls, title=title, poster=poster)
     if play_button:
         rows.append([play_button])
 
@@ -183,10 +218,12 @@ def selected_file_keyboard(
     stream_url: str | None,
     quality_urls: dict[str, str] | None = None,
     original_url: str | None = None,
+    title: str | None = None,
+    poster: str | None = None,
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    play_button = _play_button(stream_url, quality_urls)
+    play_button = _play_button(stream_url, quality_urls, title=title, poster=poster)
     if play_button:
         rows.append([play_button])
 

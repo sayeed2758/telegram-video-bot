@@ -48,9 +48,9 @@ from bot.platforms import TERABOX_HOSTS, extract_url, extract_urls
 from bot.profile import build_profile_text
 from bot.queue_manager import RESOLVE_QUEUE
 from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_info, reset_user_limit, set_user_limit
-from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
+from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, get_today_activity, get_user_activity, record_event
 from bot.resolver import resolve_link
-from bot.users import get_broadcast_users, get_user_record, mark_inactive, register_user, search_users
+from bot.users import get_broadcast_users, get_new_users_since, get_user_record, mark_inactive, register_user, search_users
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 from bot.cleanup import purge_expired_history
@@ -637,6 +637,7 @@ def _system_control_keyboard() -> InlineKeyboardMarkup:
 
 def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Today's Report", callback_data="admin_today")],
         [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast")],
         [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
         [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
@@ -645,6 +646,29 @@ def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
     ])
+
+def _admin_today_text() -> str:
+    s = get_today_activity()
+    registry = get_user_registry_stats() if 'get_user_registry_stats' in globals() else {}
+    avg = (f"{s['avg_duration_ms']/1000:.1f}s" if s['avg_duration_ms'] else "—")
+    return (
+        "📊 <b>Today's Bot Report</b>\n\n"
+        f"🆕 New users: <b>{_new_users_today()}</b>\n"
+        f"👥 Active users: <b>{s['active_users']}</b>\n\n"
+        f"🔗 Requests: <b>{s['requests']}</b>\n"
+        f"✅ Successful: <b>{s['successes']}</b>\n"
+        f"❌ Failed: <b>{s['failures']}</b>\n"
+        f"🎬 Videos: <b>{s['videos']}</b>\n"
+        f"♻️ Duplicates: <b>{s['duplicates']}</b>\n"
+        f"⚡ Cache hits: <b>{s['cache_hits']}</b>\n"
+        f"⏱ Avg processing: <b>{avg}</b>"
+    )
+
+
+def _new_users_today() -> int:
+    from bot.users import get_new_users_since
+    return get_new_users_since()
+
 
 def _admin_stats_text() -> str:
     s = get_dashboard_stats()
@@ -696,6 +720,7 @@ def _admin_user_text(user_id: int) -> str:
     activity = "🟢 Active" if int(i.get("is_active", 0)) else "⚪ Inactive"
     last_seen = i.get("last_seen") or "No activity recorded"
     last_processed = i.get("last_processed_at") or "No successful video yet"
+    a = get_user_activity(user_id)
     return (
         "👤 <b>User Administration</b>\n\n"
         f"🆔 User ID: <code>{user_id}</code>\n"
@@ -709,7 +734,12 @@ def _admin_user_text(user_id: int) -> str:
         f"• 📅 Today: <b>{i['used']}</b> used\n"
         f"• 🎯 Daily limit: <b>{escape(lt)}</b>\n"
         f"• 🟢 Remaining today: <b>{escape(rem)}</b>\n"
-        f"• 🕘 Last successful processing: <b>{escape(str(last_processed))}</b>\n\n"
+        f"• 🕘 Last successful processing: <b>{escape(str(last_processed))}</b>\n"
+        f"• 🔗 Requests (30d): <b>{a['requests']}</b>\n"
+        f"• ✅ Success: <b>{a['successes']}</b>\n"
+        f"• ❌ Failed: <b>{a['failures']}</b>\n"
+        f"• ♻️ Duplicates: <b>{a['duplicates']}</b>\n"
+        f"• ⚡ Cache hits: <b>{a['cache_hits']}</b>\n\n"
         "👇 <b>Select a limit action:</b>"
     )
 
@@ -1089,6 +1119,7 @@ async def process_url(
             else:
                 age_text = f"{age // 60}m ago" if age < 3600 else "recently"
             context.user_data["pending_duplicate_url"] = url
+            record_event(int(caller_id), "duplicate_detected", source_key=f"duplicate:{caller_id}:{url}")
             await message.reply_text(
                 "♻️ <b>Duplicate Link Detected</b>\n\n"
                 "You already processed this link " + f"<b>{age_text}</b>.\n"
@@ -1582,11 +1613,13 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_today","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
             await query.message.edit_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
+        if query.data == "admin_today":
+            await query.message.edit_text(_admin_today_text(), parse_mode="HTML", reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_analytics":
             await query.message.edit_text(_analytics_text(),parse_mode="HTML",reply_markup=_analytics_keyboard()); return
         if query.data == "admin_subscriptions":

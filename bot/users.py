@@ -26,6 +26,7 @@ def _connect() -> sqlite3.Connection:
             user_id INTEGER PRIMARY KEY,
             username TEXT NOT NULL DEFAULT '',
             first_name TEXT NOT NULL DEFAULT '',
+            first_seen TEXT NOT NULL,
             last_seen TEXT NOT NULL,
             is_active INTEGER NOT NULL DEFAULT 1
         )
@@ -34,33 +35,27 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def register_user(user) -> bool:
-    """Add/update a Telegram user and return True only on first registration."""
+def register_user(user) -> None:
+    """Add/update a Telegram user who interacts with the bot."""
     if user is None:
-        return False
+        return
     now = datetime.now(TIMEZONE).isoformat(timespec="seconds")
     username = str(user.username or "")[:255]
     first_name = str(user.first_name or user.full_name or "Telegram User")[:255]
-    user_id = int(user.id)
     with _connect() as connection:
-        existing = connection.execute(
-            "SELECT 1 FROM users WHERE user_id = ? LIMIT 1", (user_id,)
-        ).fetchone()
-        is_new = existing is None
         connection.execute(
             """
-            INSERT INTO users (user_id, username, first_name, last_seen, is_active)
-            VALUES (?, ?, ?, ?, 1)
+            INSERT INTO users (user_id, username, first_name, first_seen, last_seen, is_active)
+            VALUES (?, ?, ?, ?, ?, 1)
             ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
                 first_name=excluded.first_name,
                 last_seen=excluded.last_seen,
                 is_active=1
             """,
-            (user_id, username, first_name, now),
+            (int(user.id), username, first_name, now, now),
         )
         connection.commit()
-    return is_new
 
 
 def get_broadcast_users() -> list[int]:
@@ -162,3 +157,13 @@ def search_users(query: str, limit: int = 10) -> list[dict]:
                 (needle, needle, limit),
             ).fetchall()
     return [dict(row) for row in rows]
+
+
+def get_new_users_since(start=None) -> int:
+    start = start or datetime.now(TIMEZONE).replace(hour=0, minute=0, second=0, microsecond=0)
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT COUNT(*) FROM users WHERE first_seen >= ?",
+            (start.isoformat(timespec="seconds"),),
+        ).fetchone()
+    return int(row[0] or 0)

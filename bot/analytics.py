@@ -244,6 +244,55 @@ def get_top_users(limit: int = 8) -> list[dict[str, Any]]:
     ]
 
 
+
+def get_today_activity() -> dict[str, int]:
+    """Compact admin-facing counters for the current India calendar day."""
+    now = _now()
+    start = now.replace(hour=0, minute=0, second=0)
+    start_text, end_text = start.isoformat(timespec="seconds"), now.isoformat(timespec="seconds")
+    with _connect() as connection:
+        row = connection.execute(
+            """SELECT
+                SUM(CASE WHEN event_type='processing_started' THEN 1 ELSE 0 END) requests,
+                SUM(CASE WHEN event_type='processing_success' THEN 1 ELSE 0 END) successes,
+                SUM(CASE WHEN event_type='processing_failure' THEN 1 ELSE 0 END) failures,
+                SUM(CASE WHEN event_type='processing_success' THEN video_count ELSE 0 END) videos,
+                SUM(CASE WHEN event_type='processing_cache_hit' THEN 1 ELSE 0 END) cache_hits,
+                SUM(CASE WHEN event_type='duplicate_detected' THEN 1 ELSE 0 END) duplicates,
+                COUNT(DISTINCT CASE WHEN event_type IN ('processing_started','processing_success','processing_failure','duplicate_detected') THEN user_id END) active_users,
+                AVG(CASE WHEN event_type IN ('processing_success','processing_failure') AND duration_ms > 0 THEN duration_ms END) avg_duration_ms
+              FROM analytics_events WHERE created_at >= ? AND created_at <= ?""",
+            (start_text, end_text),
+        ).fetchone()
+    return {
+        "requests": int(row["requests"] or 0), "successes": int(row["successes"] or 0),
+        "failures": int(row["failures"] or 0), "videos": int(row["videos"] or 0),
+        "cache_hits": int(row["cache_hits"] or 0), "duplicates": int(row["duplicates"] or 0),
+        "active_users": int(row["active_users"] or 0), "avg_duration_ms": int(row["avg_duration_ms"] or 0),
+    }
+
+def get_user_activity(user_id: int, days: int = 30) -> dict[str, int]:
+    start = _now() - timedelta(days=max(1, min(int(days), 365)))
+    with _connect() as connection:
+        row = connection.execute(
+            """SELECT
+                SUM(CASE WHEN event_type='processing_started' THEN 1 ELSE 0 END) requests,
+                SUM(CASE WHEN event_type='processing_success' THEN 1 ELSE 0 END) successes,
+                SUM(CASE WHEN event_type='processing_failure' THEN 1 ELSE 0 END) failures,
+                SUM(CASE WHEN event_type='processing_success' THEN video_count ELSE 0 END) videos,
+                SUM(CASE WHEN event_type='processing_cache_hit' THEN 1 ELSE 0 END) cache_hits,
+                SUM(CASE WHEN event_type='duplicate_detected' THEN 1 ELSE 0 END) duplicates,
+                AVG(CASE WHEN event_type IN ('processing_success','processing_failure') AND duration_ms > 0 THEN duration_ms END) avg_duration_ms
+              FROM analytics_events WHERE user_id=? AND created_at >= ?""",
+            (int(user_id), start.isoformat(timespec="seconds")),
+        ).fetchone()
+    return {
+        "requests": int(row["requests"] or 0), "successes": int(row["successes"] or 0),
+        "failures": int(row["failures"] or 0), "videos": int(row["videos"] or 0),
+        "cache_hits": int(row["cache_hits"] or 0), "duplicates": int(row["duplicates"] or 0),
+        "avg_duration_ms": int(row["avg_duration_ms"] or 0),
+    }
+
 def get_quality_breakdown(days: int = 30) -> list[dict[str, Any]]:
     """Return quality labels captured from successful resolver results."""
     start = _now() - timedelta(days=max(1, min(int(days), 90)))

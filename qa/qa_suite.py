@@ -31,12 +31,13 @@ EXPECTED_FILES = [
     "bot/users.py",
     "bot/error_messages.py",
     "bot/system_control.py",
+    "bot/activity_logger.py",
 ]
 
 COMMANDS = {
     "start", "help", "session", "mylimit", "myid", "profile", "admin",
     "limit", "setlimit", "resetlimit", "broadcast", "analytics", "queue",
-    "status", "maintenance", "history", "clearhistory",
+    "status", "maintenance", "history", "clearhistory", "channelstatus", "channeltest",
 }
 
 
@@ -178,6 +179,18 @@ def check_system_control() -> None:
     print("PASS 9/9: maintenance/status controls verified")
 
 
+def check_phase4_activity() -> None:
+    config = (BOT / "config.py").read_text(encoding="utf-8")
+    users = (BOT / "users.py").read_text(encoding="utf-8")
+    activity = (BOT / "activity_logger.py").read_text(encoding="utf-8")
+    handlers = (BOT / "handlers.py").read_text(encoding="utf-8")
+    assert "ADMIN_ACTIVITY_CHANNEL_ID" in config
+    assert "def register_user(user) -> bool" in users
+    assert "notify_new_user" in activity and "notify_processing" in activity
+    assert "channelstatus" in handlers and "channeltest" in handlers
+    print("PASS 10/10: new-user + private admin activity channel integration verified")
+
+
 def main() -> None:
     check_files()
     check_compile()
@@ -188,7 +201,8 @@ def main() -> None:
     check_rate_limit()
     check_playback_ui()
     check_system_control()
-    print("\nQA RESULT: PASS — Phase 2 playback UX + subsystem checks completed.")
+    check_phase4_activity()
+    print("\nQA RESULT: PASS — Phase 4 admin activity + new-user monitoring checks completed.")
     print("Live Telegram/Render tests still require deployment and real users/API calls.")
 
 

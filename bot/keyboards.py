@@ -1,4 +1,6 @@
 from urllib.parse import quote
+import base64
+import json
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, User
 
@@ -48,7 +50,30 @@ def _quality_order(quality_urls: dict[str, str]) -> list[str]:
     ]
 
 
-def _player_url(stream_url: str, *, title: str | None = None, quality: str | None = None, poster: str | None = None) -> str:
+def _encode_quality_map(quality_urls: dict[str, str] | None) -> str | None:
+    if not isinstance(quality_urls, dict):
+        return None
+    cleaned = {
+        str(key).strip().lower(): str(value).strip()
+        for key, value in quality_urls.items()
+        if str(key).strip() and isinstance(value, str) and value.strip()
+    }
+    if not cleaned:
+        return None
+    payload = json.dumps(cleaned, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _player_url(
+    stream_url: str,
+    *,
+    title: str | None = None,
+    quality: str | None = None,
+    poster: str | None = None,
+    download_url: str | None = None,
+    quality_urls: dict[str, str] | None = None,
+    attachment_url: str | None = None,
+) -> str:
     """Wrap a resolved stream in the optional premium browser player."""
     if not PLAYER_BASE_URL:
         return stream_url
@@ -60,6 +85,13 @@ def _player_url(stream_url: str, *, title: str | None = None, quality: str | Non
         params.append(f"quality={quote(quality, safe='')}")
     if poster:
         params.append(f"poster={quote(poster, safe='')}")
+    if download_url:
+        params.append(f"download={quote(download_url, safe='')}")
+    if attachment_url:
+        params.append(f"attachment={quote(attachment_url, safe='')}")
+    encoded_qualities = _encode_quality_map(quality_urls)
+    if encoded_qualities:
+        params.append(f"qualities={encoded_qualities}")
     return PLAYER_BASE_URL + "?" + "&".join(params)
 
 
@@ -105,19 +137,36 @@ def _play_button(
     *,
     title: str | None = None,
     poster: str | None = None,
+    download_url: str | None = None,
+    attachment_url: str | None = None,
 ) -> InlineKeyboardButton | None:
     """Prefer the API stream URL; otherwise fall back to the best quality URL."""
     if isinstance(stream_url, str) and stream_url.strip():
         return InlineKeyboardButton(
             "🎬 Open Premium Player" if PLAYER_BASE_URL else "▶️ Play Video",
-            url=_player_url(stream_url.strip(), title=title, poster=poster),
+            url=_player_url(
+                stream_url.strip(),
+                title=title,
+                poster=poster,
+                download_url=download_url,
+                quality_urls=quality_urls,
+                attachment_url=attachment_url,
+            ),
         )
 
     quality, url = _best_quality(quality_urls)
     if url:
         return InlineKeyboardButton(
             f"🎬 Open {quality} Player" if PLAYER_BASE_URL else f"▶️ Play {quality}",
-            url=_player_url(url, title=title, quality=quality, poster=poster),
+            url=_player_url(
+                url,
+                title=title,
+                quality=quality,
+                poster=poster,
+                download_url=download_url,
+                quality_urls=quality_urls,
+                attachment_url=attachment_url,
+            ),
         )
 
     return None
@@ -133,7 +182,14 @@ def file_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    play_button = _play_button(stream_url, quality_urls, title=title, poster=poster)
+    play_button = _play_button(
+        stream_url,
+        quality_urls,
+        title=title,
+        poster=poster,
+        download_url=direct_url,
+        attachment_url=original_url,
+    )
     if play_button:
         rows.append([play_button])
 
@@ -223,7 +279,14 @@ def selected_file_keyboard(
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
 
-    play_button = _play_button(stream_url, quality_urls, title=title, poster=poster)
+    play_button = _play_button(
+        stream_url,
+        quality_urls,
+        title=title,
+        poster=poster,
+        download_url=direct_url,
+        attachment_url=original_url,
+    )
     if play_button:
         rows.append([play_button])
 

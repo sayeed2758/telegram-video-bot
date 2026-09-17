@@ -34,14 +34,19 @@ def _connect() -> sqlite3.Connection:
     return connection
 
 
-def register_user(user) -> None:
-    """Add/update a Telegram user who interacts with the bot."""
+def register_user(user) -> bool:
+    """Add/update a Telegram user and return True only on first registration."""
     if user is None:
-        return
+        return False
     now = datetime.now(TIMEZONE).isoformat(timespec="seconds")
     username = str(user.username or "")[:255]
     first_name = str(user.first_name or user.full_name or "Telegram User")[:255]
+    user_id = int(user.id)
     with _connect() as connection:
+        existing = connection.execute(
+            "SELECT 1 FROM users WHERE user_id = ? LIMIT 1", (user_id,)
+        ).fetchone()
+        is_new = existing is None
         connection.execute(
             """
             INSERT INTO users (user_id, username, first_name, last_seen, is_active)
@@ -52,9 +57,10 @@ def register_user(user) -> None:
                 last_seen=excluded.last_seen,
                 is_active=1
             """,
-            (int(user.id), username, first_name, now),
+            (user_id, username, first_name, now),
         )
         connection.commit()
+    return is_new
 
 
 def get_broadcast_users() -> list[int]:

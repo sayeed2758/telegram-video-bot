@@ -39,7 +39,7 @@ async def _post_init(application) -> None:
     task = asyncio.create_task(cleanup_loop(stop_event, application.bot))
     application.bot_data["cleanup_stop_event"] = stop_event
     application.bot_data["cleanup_task"] = task
-    logger.info("Phase 41 cleanup loop started (history TTL=%ss).", __import__("bot.cleanup", fromlist=["HISTORY_TTL_SECONDS"]).HISTORY_TTL_SECONDS)
+    logger.info("Phase 8 cleanup loop started (history TTL=%ss, analytics=%sd, usage=%sd).", __import__("bot.cleanup", fromlist=["HISTORY_TTL_SECONDS"]).HISTORY_TTL_SECONDS, __import__("bot.cleanup", fromlist=["ANALYTICS_TTL_DAYS"]).ANALYTICS_TTL_DAYS, __import__("bot.cleanup", fromlist=["RATE_USAGE_TTL_DAYS"]).RATE_USAGE_TTL_DAYS)
 
 
 async def _post_shutdown(application) -> None:

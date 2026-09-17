@@ -34,7 +34,7 @@ from bot.subscription import (
     activate_subscription,
     expire_subscription,
 )
-from bot.history import clear_history, get_history, get_history_item, record_success
+from bot.history import clear_history, find_recent_duplicate, get_history, get_history_item, record_success
 from bot.keyboards import (
     error_keyboard,
     file_keyboard,
@@ -51,7 +51,6 @@ from bot.admin_dashboard import get_dashboard_stats, get_users, get_user_admin_i
 from bot.analytics import bootstrap_from_history, get_daily_breakdown, get_period_stats, get_quality_breakdown, get_top_users, record_event
 from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, get_user_record, mark_inactive, register_user, search_users
-from bot.activity_logger import inspect_activity_channel, notify_new_user, notify_processing
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 from bot.cleanup import purge_expired_history
@@ -119,16 +118,6 @@ ANALYTICS_HISTORY_DB = Path(__file__).resolve().parent.parent / "data" / "histor
 bootstrap_from_history(ANALYTICS_HISTORY_DB)
 
 
-async def _register_and_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Register the current Telegram user and notify the private admin channel once."""
-    user = update.effective_user
-    is_new = register_user(user)
-    if is_new and user is not None:
-        await notify_new_user(context.bot, user)
-    context.user_data["activity_user"] = user
-    return is_new
-
-
 async def _send_welcome(message) -> None:
     if WELCOME_IMAGE.is_file():
         with WELCOME_IMAGE.open("rb") as photo:
@@ -151,8 +140,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     message = update.effective_message
     if message is None:
         return
-    await _register_and_notify(update, context)
-    context.user_data["activity_user"] = update.effective_user
+    register_user(update.effective_user)
 
     context.user_data.pop("last_url", None)
     await _send_welcome(message)
@@ -160,7 +148,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    await _register_and_notify(update, context)
+    register_user(update.effective_user)
     if message is not None:
         await message.reply_text(
             _session_status_text(),
@@ -171,7 +159,7 @@ async def session_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-    await _register_and_notify(update, context)
+    register_user(update.effective_user)
     if message is not None:
         await message.reply_text(
             HELP_TEXT,
@@ -224,7 +212,7 @@ async def mylimit_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = _user_id_from_update(update)
     if message is None or user_id is None:
         return
-    await _register_and_notify(update, context)
+    register_user(update.effective_user)
     await message.reply_text(
         _format_limit_status(get_status(user_id)) +
         "\n\nℹ️ Your quota resets automatically at midnight (India time).",
@@ -237,7 +225,7 @@ async def myid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     await message.reply_text(
         f"🆔 <b>Your Telegram User ID</b>\n\n<code>{user.id}</code>",
         parse_mode="HTML",
@@ -249,7 +237,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     await message.reply_text(
         build_profile_text(user),
         parse_mode="HTML",
@@ -269,7 +257,7 @@ async def subscription_command(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     await message.reply_text(
         build_subscription_text(user),
         parse_mode="HTML",
@@ -282,7 +270,7 @@ async def admin_setlimit_command(update: Update, context: ContextTypes.DEFAULT_T
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     if not is_admin(user.id):
         await message.reply_text("🚫 You are not authorized to use this command.")
         return
@@ -367,7 +355,7 @@ async def admin_setplan_command(update: Update, context: ContextTypes.DEFAULT_TY
     actor = update.effective_user
     if message is None or actor is None:
         return
-    await _register_and_notify(update, context)
+    register_user(actor)
     if not is_admin(actor.id):
         await message.reply_text("🚫 Admin access required.")
         return
@@ -430,7 +418,7 @@ async def admin_expire_command(update: Update, context: ContextTypes.DEFAULT_TYP
     actor = update.effective_user
     if message is None or actor is None:
         return
-    await _register_and_notify(update, context)
+    register_user(actor)
     if not is_admin(actor.id):
         await message.reply_text("🚫 Admin access required.")
         return
@@ -574,7 +562,7 @@ async def analytics_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     if not is_admin(user.id):
         await message.reply_text("🚫 <b>Admin access required.</b>", parse_mode="HTML")
         return
@@ -902,56 +890,12 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user = update.effective_user
     if message is None or user is None:
         return
-    await _register_and_notify(update, context)
+    register_user(user)
     if not is_admin(user.id):
         await message.reply_text("🚫 Admin access required.")
         return
     draft = " ".join(context.args).strip() if context.args else None
     await _start_broadcast(message, context, draft)
-
-
-async def channelstatus_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    actor = update.effective_user
-    if message is None or actor is None or not is_admin(actor.id):
-        if message is not None:
-            await message.reply_text("🚫 Admin access required.")
-        return
-    info = await inspect_activity_channel(context.bot)
-    if not info.get("configured"):
-        await message.reply_text("⚠️ <b>Activity channel is not configured.</b>\n\nSet <code>ADMIN_ACTIVITY_CHANNEL_ID</code> in Render, or keep the existing <code>ARCHIVE_CHANNEL_ID</code>.", parse_mode="HTML")
-        return
-    await message.reply_text(
-        "📡 <b>Admin Activity Channel</b>\n\n"
-        f"📌 <b>Title:</b> {escape(str(info.get('title', 'Unknown')))}\n"
-        f"🆔 <b>ID:</b> <code>{escape(str(info.get('channel_id', '')))}</code>\n"
-        f"👮 <b>Bot status:</b> {escape(str(info.get('status', 'unknown')))}\n"
-        f"📤 <b>Can post:</b> {'✅ Yes' if info.get('can_post') is not False else '❌ No'}\n"
-        f"✅ <b>Ready:</b> {'Yes' if info.get('ok') else 'No'}",
-        parse_mode="HTML",
-    )
-
-
-async def channeltest_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    message = update.effective_message
-    actor = update.effective_user
-    if message is None or actor is None or not is_admin(actor.id):
-        if message is not None:
-            await message.reply_text("🚫 Admin access required.")
-        return
-    info = await inspect_activity_channel(context.bot)
-    if not info.get("ok"):
-        await message.reply_text(
-            "❌ <b>Activity channel test failed.</b>\n\n" + escape(str(info.get("reason", "Channel is not ready."))),
-            parse_mode="HTML",
-        )
-        return
-    from bot.activity_logger import _send as _send_activity_message
-    ok = await _send_activity_message(
-        context.bot,
-        "✅ <b>ADMIN ACTIVITY CHANNEL TEST</b>\n\nThe bot can post activity notifications to this private channel.\n🕐 " + escape(str(__import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo("Asia/Kolkata")).strftime("%d %b %Y • %I:%M:%S %p"))),
-    )
-    await message.reply_text("✅ Channel test message sent." if ok else "❌ Channel test message could not be sent.")
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -985,7 +929,7 @@ async def maintenance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     m=update.effective_message; u=update.effective_user
     if m is None or u is None: return
-    await _register_and_notify(update, context)
+    register_user(u)
     if not is_admin(u.id):
         await m.reply_text("🚫 <b>Admin access required.</b>",parse_mode="HTML"); return
     await m.reply_text(_admin_stats_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard())
@@ -1034,7 +978,7 @@ async def history_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     user_id = _user_id_from_update(update)
     if message is None or user_id is None:
         return
-    await _register_and_notify(update, context)
+    register_user(update.effective_user)
 
     rows = get_history(user_id)
     if not rows:
@@ -1103,6 +1047,7 @@ async def process_url(
     context: ContextTypes.DEFAULT_TYPE,
     url: str,
     password: str | None = None,
+    skip_duplicate_check: bool = False,
 ) -> None:
     context.user_data["last_url"] = url
     if password is None:
@@ -1114,7 +1059,6 @@ async def process_url(
     # python-telegram-bot contexts do not expose effective_user directly; the
     # handler stores the caller id before entering this function.
     caller_id = context.user_data.get("rate_limit_user_id")
-    activity_user = context.user_data.get("activity_user")
     if caller_id is not None:
         status_info = get_status(int(caller_id))
         limit = int(status_info["limit"])
@@ -1132,6 +1076,32 @@ async def process_url(
             return
 
     purge_expired_history()
+
+    # Phase 5: stop accidental re-processing of the same recent link before
+    # spending another resolver/API request. Explicit Retry/Process Again
+    # actions pass skip_duplicate_check=True so users can intentionally re-run.
+    if caller_id is not None and not skip_duplicate_check:
+        duplicate = find_recent_duplicate(int(caller_id), url)
+        if duplicate is not None:
+            age = int(duplicate.get("age_seconds", 0))
+            if age < 60:
+                age_text = "just now"
+            else:
+                age_text = f"{age // 60}m ago" if age < 3600 else "recently"
+            context.user_data["pending_duplicate_url"] = url
+            await message.reply_text(
+                "♻️ <b>Duplicate Link Detected</b>\n\n"
+                "You already processed this link " + f"<b>{age_text}</b>.\n"
+                "I stopped here so I don't waste another resolver/API request.\n\n"
+                "Do you want to process it again?",
+                parse_mode="HTML",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Process Again", callback_data="duplicate_process")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="duplicate_cancel")],
+                ]),
+            )
+            return
+
     processing_started_at = perf_counter()
     if caller_id is not None:
         record_event(int(caller_id), "processing_started")
@@ -1281,6 +1251,7 @@ async def process_url(
                         "resolved_quality",
                         error_category=quality,
                     )
+
         # Phase 18: keep the single-file UI, but expose every file from a
         # folder/share through an interactive selector. The resolved data is
         # stored only for the current user/session; URLs are never placed in
@@ -1299,17 +1270,6 @@ async def process_url(
             }
             for item in result.files
         ]
-
-        if activity_user is not None:
-            await notify_processing(
-                context.bot,
-                activity_user,
-                url,
-                result.files,
-                cache_hit=cache_hit,
-                duration_ms=duration_ms,
-                success=True,
-            )
 
         if len(result.files) > 1:
             lines = [
@@ -1425,17 +1385,6 @@ async def process_url(
         return
 
     reason = result.message
-    if activity_user is not None:
-        await notify_processing(
-            context.bot,
-            activity_user,
-            url,
-            [],
-            cache_hit=cache_hit,
-            duration_ms=duration_ms,
-            success=False,
-            error=reason,
-        )
     lowered = str(reason or "").lower()
     if caller_id is not None:
         title_for_analytics, _friendly_for_analytics = classify_resolver_error(reason)
@@ -1480,8 +1429,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     message = update.effective_message
     if message is None or not message.text:
         return
-    await _register_and_notify(update, context)
-    context.user_data["activity_user"] = update.effective_user
+    register_user(update.effective_user)
 
     valid_text, text_or_reason = validate_incoming_text(message.text, MAX_MESSAGE_LENGTH)
     if not valid_text:
@@ -1632,7 +1580,7 @@ async def callback_handler(
         return
 
     await query.answer()
-    await _register_and_notify(update, context)
+    register_user(update.effective_user)
 
     if query.data in {"admin","admin_stats","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
@@ -1805,6 +1753,34 @@ async def callback_handler(
         )
         return
 
+    if query.data == "duplicate_process":
+        user_id = _user_id_from_update(update)
+        if user_id is None:
+            return
+        url = context.user_data.pop("pending_duplicate_url", None)
+        if not url:
+            await query.message.reply_text(
+                "ℹ️ The duplicate request expired. Please send the link again.",
+                reply_markup=welcome_keyboard(),
+            )
+            return
+        context.user_data["rate_limit_user_id"] = user_id
+        await process_url(query.message, context, url, skip_duplicate_check=True)
+        return
+
+    if query.data == "duplicate_cancel":
+        context.user_data.pop("pending_duplicate_url", None)
+        await query.message.edit_text(
+            "✅ <b>Cancelled.</b>\n\n"
+            "No duplicate API request was made.",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Start", callback_data="start")],
+                [InlineKeyboardButton("📜 History", callback_data="history")],
+            ]),
+        )
+        return
+
     if query.data == "history":
         user_id = _user_id_from_update(update)
         if user_id is None:
@@ -1907,7 +1883,7 @@ async def callback_handler(
             return
 
         context.user_data["rate_limit_user_id"] = user_id
-        await process_url(query.message, context, item["share_url"])
+        await process_url(query.message, context, item["share_url"], skip_duplicate_check=True)
         return
 
     if query.data == "history_clear":
@@ -2138,7 +2114,7 @@ async def callback_handler(
             return
 
         context.user_data["rate_limit_user_id"] = update.effective_user.id if update.effective_user else None
-        await process_url(query.message, context, last_url, password=context.user_data.get("last_password"))
+        await process_url(query.message, context, last_url, password=context.user_data.get("last_password"), skip_duplicate_check=True)
 
 
 async def telegram_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2179,8 +2155,6 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
-    application.add_handler(CommandHandler("channelstatus", channelstatus_command))
-    application.add_handler(CommandHandler("channeltest", channeltest_command))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)

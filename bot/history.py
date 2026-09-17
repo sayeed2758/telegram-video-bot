@@ -8,6 +8,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit, urlunsplit
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
@@ -56,6 +57,45 @@ def _clean_names(files, max_items: int = 20) -> list[str]:
             break
     return names
 
+
+
+def _canonical_url(value: str) -> str:
+    """Canonicalize a public share URL for duplicate detection."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+        scheme = parts.scheme.lower()
+        hostname = (parts.hostname or "").lower()
+        if not scheme or not hostname:
+            return raw.rstrip("/")
+        netloc = hostname
+        if parts.port:
+            netloc = f"{hostname}:{parts.port}"
+        path = parts.path.rstrip("/") or "/"
+        return urlunsplit((scheme, netloc, path, parts.query, ""))
+    except ValueError:
+        return raw.rstrip("/")
+
+
+def find_recent_duplicate(user_id: int, share_url: str) -> dict | None:
+    """Return the user's recent history entry for the same share URL, if any."""
+    target = _canonical_url(share_url)
+    if not target:
+        return None
+    rows = get_history(user_id, DEFAULT_HISTORY_LIMIT)
+    for item in rows:
+        if _canonical_url(item.get("share_url", "")) == target:
+            try:
+                created = datetime.fromisoformat(str(item["created_at"]))
+                age_seconds = max(0, int((datetime.now(TIMEZONE) - created).total_seconds()))
+            except (TypeError, ValueError):
+                age_seconds = 0
+            item = dict(item)
+            item["age_seconds"] = age_seconds
+            return item
+    return None
 
 def record_success(user_id: int, share_url: str, files, video_count: int) -> None:
     """Record one successful processing event.

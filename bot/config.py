@@ -45,6 +45,11 @@ RATE_LIMIT_TIMEZONE = os.getenv("RATE_LIMIT_TIMEZONE", "Asia/Kolkata").strip() o
 # Phase 33: optional production hardening.
 WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "").strip()
 
+# Phase 7: private channel used for admin alerts. Falls back to the existing
+# archive channel when ADMIN_ALERT_CHANNEL_ID is not explicitly configured.
+ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
+ADMIN_ALERT_CHANNEL_ID = os.getenv("ADMIN_ALERT_CHANNEL_ID", "").strip()
+
 try:
     MAX_MESSAGE_LENGTH = max(1000, min(int(os.getenv("MAX_MESSAGE_LENGTH", "12000").strip()), 50000))
 except ValueError:
@@ -80,7 +85,3 @@ except ValueError:
 SUBSCRIPTION_CONTACT_USERNAME = os.getenv("SUBSCRIPTION_CONTACT_USERNAME", "Dragonn_Exclusive").strip().lstrip("@")
 SUBSCRIPTION_CONTACT_USER_ID = int(os.getenv("SUBSCRIPTION_CONTACT_USER_ID", "7955228561").strip() or "7955228561")
 SUBSCRIPTION_DAYS = max(1, int(os.getenv("SUBSCRIPTION_DAYS", "30").strip() or "30"))
-
-# Phase 4: private admin activity channel. Falls back to the existing archive channel.
-ARCHIVE_CHANNEL_ID = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
-ADMIN_ACTIVITY_CHANNEL_ID = os.getenv("ADMIN_ACTIVITY_CHANNEL_ID", ARCHIVE_CHANNEL_ID).strip()

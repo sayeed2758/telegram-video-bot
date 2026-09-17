@@ -54,6 +54,7 @@ from bot.users import get_broadcast_users, get_new_users_since, get_user_record,
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
 from bot.cleanup import purge_expired_history
+from bot.admin_alerts import track_failure, track_request
 
 WELCOME_TEXT = (
     "👋 <b>Welcome to Advance Tera Video Bot!</b>\n"
@@ -1136,6 +1137,13 @@ async def process_url(
     processing_started_at = perf_counter()
     if caller_id is not None:
         record_event(int(caller_id), "processing_started")
+        tg_user = getattr(message, "from_user", None)
+        asyncio.create_task(track_request(
+            context.bot,
+            int(caller_id),
+            name=getattr(tg_user, "first_name", "Unknown") or "Unknown",
+            username=getattr(tg_user, "username", "") or "",
+        ))
 
     status = await message.reply_text(
         "🔗 <b>TeraBox link detected.</b>\n\n"
@@ -1419,12 +1427,21 @@ async def process_url(
     lowered = str(reason or "").lower()
     if caller_id is not None:
         title_for_analytics, _friendly_for_analytics = classify_resolver_error(reason)
+        failure_category = title_for_analytics.replace("🛡️ ", "").replace("❌ ", "")[:80]
         record_event(
             int(caller_id),
             "processing_failure",
             duration_ms=duration_ms,
-            error_category=title_for_analytics.replace("🛡️ ", "").replace("❌ ", "")[:80],
+            error_category=failure_category,
         )
+        tg_user = getattr(message, "from_user", None)
+        asyncio.create_task(track_failure(
+            context.bot,
+            int(caller_id),
+            name=getattr(tg_user, "first_name", "Unknown") or "Unknown",
+            username=getattr(tg_user, "username", "") or "",
+            category=failure_category or "Resolver failure",
+        ))
 
     if "password required" in lowered:
         context.user_data["awaiting_password"] = True

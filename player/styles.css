@@ -1,0 +1,46 @@
+:root {
+  color-scheme: dark;
+  --bg: #05070b;
+  --card: #0b1018;
+  --line: rgba(255,255,255,.10);
+  --text: #f5f7fb;
+  --muted: #9ba5b5;
+  --accent: #7c5cff;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; background: radial-gradient(circle at 50% -10%, #172033 0%, var(--bg) 42%); color: var(--text); font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { display:flex; justify-content:center; }
+button, select, input { font: inherit; }
+.player-shell { width: min(100%, 1100px); padding: 14px; }
+.player-card { overflow: hidden; border: 1px solid var(--line); border-radius: 22px; background: rgba(11,16,24,.92); box-shadow: 0 28px 80px rgba(0,0,0,.45); }
+.topbar { display:flex; align-items:center; gap:12px; padding: 12px 14px; border-bottom:1px solid var(--line); backdrop-filter: blur(16px); }
+.icon-btn, .control-btn { border:0; color:var(--text); background:transparent; cursor:pointer; }
+.icon-btn { width:40px; height:40px; border-radius:12px; font-size:24px; }
+.icon-btn:hover, .control-btn:hover { background: rgba(255,255,255,.08); }
+.title-wrap { flex:1; min-width:0; }
+.title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-weight:700; }
+.meta { margin-top:2px; color:var(--muted); font-size:12px; }
+.stage { position:relative; aspect-ratio:16/9; background:#000; display:flex; align-items:center; justify-content:center; }
+video { width:100%; height:100%; display:block; object-fit:contain; background:#000; }
+.big-play { position:absolute; width:76px; height:76px; border:0; border-radius:50%; color:#fff; background:rgba(255,255,255,.92); color:#12151c; font-size:30px; cursor:pointer; box-shadow:0 10px 40px rgba(0,0,0,.35); }
+.big-play.hidden { display:none; }
+.controls { padding:10px 14px 14px; background:linear-gradient(180deg, rgba(5,7,11,.82), rgba(5,7,11,1)); }
+.timeline-row { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; font-size:12px; color:var(--muted); }
+#seek { width:100%; accent-color:var(--accent); }
+.control-row { display:flex; align-items:center; gap:6px; margin-top:8px; flex-wrap:wrap; }
+.control-btn { min-width:38px; height:38px; padding:0 9px; border-radius:10px; }
+.control-btn.wide { font-size:12px; }
+.select { height:38px; border:1px solid var(--line); border-radius:10px; background:#0f151f; color:var(--text); padding:0 9px; }
+.details { padding:20px 4px 10px; }
+.badge { display:inline-block; padding:6px 9px; border:1px solid rgba(124,92,255,.35); border-radius:999px; color:#c8bdff; background:rgba(124,92,255,.12); font-size:10px; letter-spacing:.10em; font-weight:800; }
+.details h1 { margin:12px 0 8px; font-size:clamp(20px, 4vw, 30px); }
+.details p { margin:12px 0 0; color:var(--muted); line-height:1.5; }
+.chips { display:flex; flex-wrap:wrap; gap:8px; }
+.chip { padding:6px 9px; border:1px solid var(--line); border-radius:999px; color:var(--muted); background:rgba(255,255,255,.04); font-size:10px; font-weight:700; }
+.loader { position:absolute; width:54px; height:54px; display:flex; justify-content:center; align-items:center; gap:5px; border-radius:50%; background:rgba(10,12,16,.72); backdrop-filter:blur(8px); }
+.loader span { width:7px; height:7px; border-radius:50%; background:#fff; animation:b 1s infinite ease-in-out; }
+.loader span:nth-child(2){animation-delay:.14s}.loader span:nth-child(3){animation-delay:.28s}
+@keyframes b {0%,80%,100%{opacity:.2;transform:scale(.8)}40%{opacity:1;transform:scale(1)}}
+.message { position:absolute; inset:auto 18px 18px; padding:11px 13px; border:1px solid rgba(255,255,255,.1); border-radius:12px; background:rgba(0,0,0,.78); text-align:center; font-size:13px; }
+.hidden { display:none !important; }
+@media (max-width:600px) { .player-shell{padding:0}.player-card{border-radius:0;border-left:0;border-right:0}.details{padding:18px 14px}.control-row{justify-content:space-between}.control-btn{min-width:36px}.select{order:20}.stage{aspect-ratio:16/10}.big-play{width:68px;height:68px;font-size:26px} }

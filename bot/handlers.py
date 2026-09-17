@@ -53,7 +53,7 @@ from bot.resolver import resolve_link
 from bot.users import get_broadcast_users, get_new_users_since, get_user_record, mark_inactive, register_user, search_users
 from bot.security import validate_incoming_text
 from bot.system_control import APP_VERSION, format_uptime, is_maintenance, set_maintenance
-from bot.cleanup import purge_expired_history
+from bot.cleanup import purge_expired_history, database_health, cleanup_all
 from bot.admin_alerts import track_failure, track_request
 
 WELCOME_TEXT = (
@@ -630,7 +630,7 @@ def _system_control_keyboard() -> InlineKeyboardMarkup:
         toggle = InlineKeyboardButton("🛑 Turn Maintenance ON", callback_data="admin_maintenance_on")
     return InlineKeyboardMarkup([
         [toggle],
-        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status")],
+        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status"), InlineKeyboardButton("🗄️ DB Health", callback_data="admin_dbhealth")],
         [InlineKeyboardButton("👑 Admin Dashboard", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
     ])
@@ -643,7 +643,8 @@ def _admin_dashboard_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("📊 Statistics", callback_data="admin_stats"), InlineKeyboardButton("📈 Analytics", callback_data="admin_analytics")],
         [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("🔎 Find User", callback_data="admin_find_user")],
         [InlineKeyboardButton("💳 Subscriptions", callback_data="admin_subscriptions"), InlineKeyboardButton("⏳ Queue", callback_data="admin_queue")],
-        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status"), InlineKeyboardButton("🛠️ Maintenance", callback_data="admin_maintenance")],
+        [InlineKeyboardButton("🩺 System Status", callback_data="admin_status"), InlineKeyboardButton("🗄️ DB Health", callback_data="admin_dbhealth")],
+        [InlineKeyboardButton("🛠️ Maintenance", callback_data="admin_maintenance")],
         [InlineKeyboardButton("🔄 Refresh", callback_data="admin")],
         [InlineKeyboardButton("🏠 Start", callback_data="start")],
     ])
@@ -927,6 +928,37 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     draft = " ".join(context.args).strip() if context.args else None
     await _start_broadcast(message, context, draft)
+
+
+async def dbhealth_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    actor = update.effective_user
+    if message is None or actor is None or not is_admin(actor.id):
+        if message is not None:
+            await message.reply_text("🚫 Admin access required.")
+        return
+    rows = database_health()
+    lines = ["🗄️ <b>Database Health</b>", ""]
+    for item in rows:
+        name = escape(str(item["name"]))
+        if not item["exists"]:
+            lines.append(f"⚪ <b>{name}</b> — not created yet")
+            continue
+        size_mb = float(item["size_bytes"]) / (1024 * 1024)
+        status = str(item.get("status") or "unknown")
+        icon = "🟢" if status == "healthy" else "🟠"
+        lines.append(f"{icon} <b>{name}</b> — {escape(status)} • {size_mb:.2f} MB")
+        tables = item.get("tables") or {}
+        if tables:
+            compact = ", ".join(f"{escape(str(k))}: {int(v):,}" for k, v in tables.items())
+            lines.append(f"   📦 {compact}")
+    lines += [
+        "",
+        f"🧹 History TTL: <b>{int(__import__('bot.cleanup', fromlist=['HISTORY_TTL_SECONDS']).HISTORY_TTL_SECONDS // 60)} min</b>",
+        f"📈 Analytics retention: <b>{int(__import__('bot.cleanup', fromlist=['ANALYTICS_TTL_DAYS']).ANALYTICS_TTL_DAYS)} days</b>",
+        f"🚦 Usage retention: <b>{int(__import__('bot.cleanup', fromlist=['RATE_USAGE_TTL_DAYS']).RATE_USAGE_TTL_DAYS)} days</b>",
+    ]
+    await message.reply_text("\n".join(lines), parse_mode="HTML", reply_markup=_system_control_keyboard())
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1630,7 +1662,7 @@ async def callback_handler(
     await query.answer()
     register_user(update.effective_user)
 
-    if query.data in {"admin","admin_stats","admin_today","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
+    if query.data in {"admin","admin_stats","admin_today","admin_analytics","admin_users","admin_find_user","admin_broadcast","admin_broadcast_confirm","admin_broadcast_cancel","admin_queue","admin_status","admin_dbhealth","admin_maintenance","admin_maintenance_on","admin_maintenance_off","admin_subscriptions"} or (query.data and query.data.startswith("admin_user:")) or (query.data and query.data.startswith("admin_set:")) or (query.data and query.data.startswith("admin_reset:")):
         actor=update.effective_user
         if actor is None or not is_admin(actor.id): return
         if query.data in {"admin","admin_stats"}:
@@ -1656,6 +1688,18 @@ async def callback_handler(
             await query.message.edit_text(_admin_queue_text(),parse_mode="HTML",reply_markup=_admin_dashboard_keyboard()); return
         if query.data == "admin_status":
             await query.message.edit_text(_admin_status_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
+        if query.data == "admin_dbhealth":
+            rows = database_health()
+            lines = ["🗄️ <b>Database Health</b>", ""]
+            for item in rows:
+                if not item["exists"]:
+                    lines.append(f"⚪ <b>{escape(str(item["name"]))}</b> — not created yet")
+                    continue
+                size_mb = float(item["size_bytes"]) / (1024 * 1024)
+                status = str(item.get("status") or "unknown")
+                icon = "🟢" if status == "healthy" else "🟠"
+                lines.append(f"{icon} <b>{escape(str(item["name"]))}</b> — {escape(status)} • {size_mb:.2f} MB")
+            await query.message.edit_text("\n".join(lines), parse_mode="HTML", reply_markup=_system_control_keyboard()); return
         if query.data == "admin_maintenance":
             await query.message.edit_text(_maintenance_text(),parse_mode="HTML",reply_markup=_system_control_keyboard()); return
         if query.data == "admin_maintenance_on":
@@ -2202,6 +2246,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("analytics", analytics_command))
     application.add_handler(CommandHandler("queue", queue_command))
     application.add_handler(CommandHandler("status", status_command))
+    application.add_handler(CommandHandler("dbhealth", dbhealth_command))
     application.add_handler(CommandHandler("maintenance", maintenance_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("clearhistory", clear_history_command))
